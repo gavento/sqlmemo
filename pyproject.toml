@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "sqlcache"
+version = "0.1.0"
+description = ""
+authors = ["Tomas Gavenciak <gavento@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+sqlalchemy = "^2.0.30"
+
+
+[tool.poetry.group.dev.dependencies]
+black = "^24.4.2"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
