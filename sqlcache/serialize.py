@@ -3,7 +3,7 @@ import hashlib
 from typing import Any
 
 
-def _hash_helper(self, obj: Any, hash: hashlib._Hash, sort_keys: bool):
+def _hash_helper(obj: Any, hash, sort_keys: bool):
     hash.update(str(type(obj)).encode())
     if isinstance(obj, (int, float, bool, str, bytes, type(None))):
         hash.update(str(obj).encode())  # These have a deterministic str()
@@ -13,7 +13,7 @@ def _hash_helper(self, obj: Any, hash: hashlib._Hash, sort_keys: bool):
     elif isinstance(obj, (set, frozenset)):
         for item in sorted(obj) if sort_keys else obj:
             _hash_helper(item, hash, sort_keys=sort_keys)
-    if isinstance(obj, dict):
+    elif isinstance(obj, dict):
         # Note: the order of items in the dictionary generaly matters
         keys = sorted(obj.keys()) if sort_keys else obj.keys()
         for key in keys:
@@ -21,7 +21,7 @@ def _hash_helper(self, obj: Any, hash: hashlib._Hash, sort_keys: bool):
             _hash_helper(obj[key], hash, sort_keys=sort_keys)
     elif dataclasses.is_dataclass(obj):
         for field in dataclasses.fields(obj):
-            hash.update(field.name)
+            _hash_helper(field.name, hash, sort_keys=sort_keys)
             _hash_helper(getattr(obj, field.name), hash, sort_keys=sort_keys)
     else:
         raise TypeError(f"Unsupported type in hash_obj: {type(obj)}")
@@ -64,3 +64,4 @@ def jsonize(obj: Any) -> str:
         }
     else:
         raise TypeError(f"Unsupported type in jsonize: {type(obj)}")
+
