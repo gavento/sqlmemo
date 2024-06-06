@@ -47,6 +47,17 @@ jupyter = ["ipython (>=7.8.0)", "tokenize-rt (>=3.2.0)"]
 uvloop = ["uvloop (>=0.15.2)"]
 
 [[package]]
+name = "canonicaljson"
+version = "2.0.0"
+description = "Canonical JSON"
+optional = false
+python-versions = ">=3.7"
+files = [
+    {file = "canonicaljson-2.0.0-py3-none-any.whl", hash = "sha256:c38a315de3b5a0532f1ec1f9153cd3d716abfc565a558d00a4835428a34fca5b"},
+    {file = "canonicaljson-2.0.0.tar.gz", hash = "sha256:e2fdaef1d7fadc5d9cb59bd3d0d41b064ddda697809ac4325dced721d12f113f"},
+]
+
+[[package]]
 name = "click"
 version = "8.1.7"
 description = "Composable command line interface toolkit"
@@ -303,4 +314,4 @@ files = [
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.10"
-content-hash = "0d61bdea7781e3e5cfd6b65a9bce7bb81e5cec876dcf83fcdd3bdde273269d37"
+content-hash = "24187e0b9147d296df7b0681c26f92c909772dfe3b9f8e6d3e63151273e26bd7"
