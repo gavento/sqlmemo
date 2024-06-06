@@ -41,6 +41,7 @@ class CachedFunction:
 
     DEFAULT_DB_URL = "sqlite:///:memory:"
     DEFAULT_TABLE_NAME_PREFIX = "cache_"
+    FUNCTION_CACHE_KEY = "__sqlcache__"
 
     def __init__(
         self,
@@ -303,6 +304,7 @@ class CachedFunction:
             async def awrapper(*args, **kwargs):
                 return await self._call_func_async(*args, **kwargs)
 
+            awrapper.__setattr__(self.FUNCTION_CACHE_KEY, self)
             return awrapper
         else:
 
@@ -310,4 +312,5 @@ class CachedFunction:
             def wrapper(*args, **kwargs):
                 return self._call_func(*args, **kwargs)
 
+            wrapper.__setattr__(self.FUNCTION_CACHE_KEY, self)
             return wrapper
