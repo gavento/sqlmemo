@@ -1,4 +1,5 @@
 import asyncio
+import enum
 import functools
 import getpass
 import inspect
@@ -7,13 +8,13 @@ import re
 import socket
 import threading
 from contextlib import contextmanager
-from enum import Enum
 from typing import Any, Callable, Iterable, Optional, Type
 
 from sqlalchemy import (
     JSON,
     TIMESTAMP,
     Column,
+    Enum,
     Index,
     Integer,
     LargeBinary,
@@ -30,7 +31,7 @@ from sqlalchemy.orm import sessionmaker
 from . import serialize
 
 
-class FunctionState(Enum):
+class FunctionState(enum.Enum):
     RUNNING = "RUNNING"
     DONE = "DONE"
     ERROR = "ERROR"
@@ -43,7 +44,7 @@ class CachedFunction:
 
     def __init__(
         self,
-        db_url: str | None = None,
+        db: str | Engine | None = None,
         *,
         func: Callable | None = None,
         func_name: str | None = None,
@@ -55,9 +56,6 @@ class CachedFunction:
         reraise_exceptions: bool | Iterable[Type] = False,
         indexes: Iterable[str] = (),
     ):
-        if db_url is None:
-            db_url = self.DEFAULT_DB_URL
-        self._db_url = db_url
         self._func_name = func_name
         self._table_name = table_name
         self._func = None
@@ -76,8 +74,17 @@ class CachedFunction:
 
         self._lock = threading.Lock()
         self._engine: Optional[Engine] = None
-        self._Session: Optional[sessionmaker] = None
+        self._sessionmaker: Optional[sessionmaker] = None
         self._table: Optional[Table] = None
+        self._db_url: Optional[str] = None
+
+        if db is None:
+            db = self.DEFAULT_DB_URL
+        if isinstance(db, Engine):
+            self._engine = db
+            self._db_url = db.url  # Only as informative at this point
+        else:
+            self._db_url = db
 
     def _set_func(self, func: Callable):
         """Set the wrapped function during or after __init__ (for use as a decorator)"""
@@ -90,21 +97,22 @@ class CachedFunction:
             self._table_name = f"{self.DEFAULT_TABLE_NAME_PREFIX}{self._func_name}"
 
     @contextmanager
-    def _get_database_lock(self):
+    def _get_locked_session(self):
         """
         Lock the mutex and return a new database session, only to be used locally.
         Use only as a context manager!
         """
         with self._lock:
             self._prepare_database()
-            yield self._Session()
+            yield self._sessionmaker()
 
     def _prepare_database(self):
         """Create DB connection and ensure the tables exist. Assumes self._lock is held."""
         assert self._lock.locked()
         if self._engine is None:
             self._engine = create_engine(self._db_url)
-            self._Session = sessionmaker(bind=self._engine)
+        if self._sessionmaker is None:
+            self._sessionmaker = sessionmaker(bind=self._engine)
             self._table = self._table_schema()
             self._table.metadata.create_all(self._engine)
 
@@ -133,7 +141,7 @@ class CachedFunction:
             Column("return_json", JSON, nullable=True),
             Column("exception_pickle", LargeBinary, nullable=True),
             Column("exception_str", Text, nullable=True),
-            Column("state", String),
+            Column("state", Enum(FunctionState), nullable=False),
             Index(f"ix_{self._table_name}_func_name_args_hash", "func_name", "args_hash", unique=True),
             *extra_indexes,
         )
@@ -180,11 +188,7 @@ class CachedFunction:
             return param
         return isinstance(exception, tuple(param))
 
-    def _insert_row_operation(
-        self, args_dict, args_hash, value=None, exception=None, running=False, update_on_conflict=True
-    ):
-        args_json = self._encode_value_helper(args_dict, self._args_json, _json=True)
-        args_pickle = self._encode_value_helper(args_dict, self._args_pickle, _pickle=True)
+    def _insert_row_data(self, args_dict, args_hash, value=None, exception=None, running=False):
         if running:
             return_json = None
             return_pickle = None
@@ -193,7 +197,7 @@ class CachedFunction:
             state = FunctionState.RUNNING
         elif exception is None:
             return_json = self._encode_value_helper(value, self._return_json, _json=True)
-            return_pickle = self._encode_value_helper(value, self._return_json, _pickle=True)
+            return_pickle = self._encode_value_helper(value, True, _pickle=True)
             exception_pickle = None
             exception_str = None
             state = FunctionState.DONE
@@ -204,7 +208,9 @@ class CachedFunction:
             exception_str = str(exception)
             state = FunctionState.ERROR
 
-        op = self._table.insert().values(
+        args_json = self._encode_value_helper(args_dict, self._args_json, _json=True)
+        args_pickle = self._encode_value_helper(args_dict, self._args_pickle, _pickle=True)
+        return dict(
             timestamp=func.now(),
             user=getpass.getuser(),
             hostname=socket.gethostname(),
@@ -218,29 +224,13 @@ class CachedFunction:
             exception_str=exception_str,
             state=state,
         )
-        if update_on_conflict:
-            op = op.on_conflict_update(
-                index_elements=["id"],
-                set_={
-                    "timestamp": func.now(),
-                    "user": getpass.getuser(),
-                    "hostname": socket.gethostname(),
-                    "args_pickle": args_pickle,
-                    "args_json": args_json,
-                    "return_pickle": return_pickle,
-                    "return_json": return_json,
-                    "exception_pickle": exception_pickle,
-                    "exception_str": exception_str,
-                    "state": state,
-                },
-            )
-        return op
 
     def _call_func(self, *args, **kwargs):
         args_dict = self._args_to_dict(args, kwargs)
         args_hash = self._hash_obj(args_dict)
 
-        with self._get_database_lock() as session:
+        with self._get_locked_session() as session:  # Transaction
+
             # Check for existing result
             query = (
                 self._table.select()
@@ -251,38 +241,56 @@ class CachedFunction:
 
             if result:
                 if result.state == FunctionState.DONE:
+                    # Cache hit
                     return pickle.loads(result.return_pickle)
                 elif result.state == FunctionState.RUNNING:
+                    # Computation is already running
                     raise NotImplementedError("TODO - complex logic needed")
                 else:
-                    if result.exception_pickle is None and self._reraise_exceptions is not False:
-                        raise RuntimeError(
-                            f"Exception not recorded, can't reraise in {self._table_name}(id={result.id})"
-                        )
-                    exc = pickle.loads(result.exception_pickle)
-                    if self._exception_check_helper(exc, self._reraise_exceptions):
-                        raise exc
-                    else:
-                        # Here we should re-run the computation
-                        pass
+                    # Last execution returned an exception
+
+                    if self._reraise_exceptions is not False:
+                        # Check if the exception should be reraised
+                        if result.exception_pickle is None:
+                            raise RuntimeError(
+                                f"Exception not recorded, can't reraise from {self._table_name}(id={result.id})"
+                            )
+                        exc = pickle.loads(result.exception_pickle)
+                        if self._exception_check_helper(exc, self._reraise_exceptions):
+                            raise exc
+                    # Otherwise just re-run the computation
 
             # Record as running
-            session.execute(self._insert_row_operation(args_dict, args_hash, running=True))
-            session.commit()
+            self._upsert_row(session, self._insert_row_data(args_dict, args_hash, running=True))
 
-            # Run the function
-            try:
-                value = self._func(*args, **kwargs)
-            except Exception as e:
-                if self._exception_check_helper(e, self._record_exceptions):
-                    session.execute(self._insert_row_operation(args_dict, args_hash, exception=e))
-                    session.commit()
-                raise e
+        # Run the function
+        try:
+            value = self._func(*args, **kwargs)
+        except Exception as e:
+            if self._exception_check_helper(e, self._record_exceptions):
+                with self._get_locked_session() as session:  # Transaction
+                    self._upsert_row(session, self._insert_row_data(args_dict, args_hash, exception=e))
+            raise e
 
-            # Record the result
-            session.execute(self._insert_row_operation(args_dict, args_hash, value=value))
-            session.commit()
+        # Record the result
+        with self._get_locked_session() as session:  # Transaction
+            self._upsert_row(session, self._insert_row_data(args_dict, args_hash, value=value))
             return value
+
+    def _upsert_row(self, session, data):
+        """Insert or update a row in the database"""
+        # Is the call present?
+        query = (
+            self._table.select()
+            .where(self._table.c.func_name == data["func_name"])
+            .where(self._table.c.args_hash == data["args_hash"])
+        )
+        result = session.execute(query).fetchone()
+        if result:
+            query = self._table.update().values(data).where(self._table.c.id == result.id)
+        else:
+            query = self._table.insert().values(data)
+        session.execute(query)
 
     async def _call_func_async(self, *args, **kwargs):
         raise NotImplementedError("Async functions are not yet supported")
