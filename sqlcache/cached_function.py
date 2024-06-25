@@ -2,6 +2,7 @@ import asyncio
 import enum
 import functools
 import getpass
+import hashlib
 import inspect
 import pickle
 import re
@@ -50,12 +51,12 @@ class CachedFunction:
         func: Callable | None = None,
         func_name: str | None = None,
         table_name: str | None = None,
+        hash_factory: Callable = hashlib.sha256,
         args_pickle: bool | Callable = False,
         args_json: bool | Callable = False,
         return_json: bool | Callable = False,
         record_exceptions: bool | Iterable[Type] = False,
         reraise_exceptions: bool | Iterable[Type] = False,
-        indexes: Iterable[str] = (),
     ):
         self._func_name = func_name
         self._table_name = table_name
@@ -67,7 +68,7 @@ class CachedFunction:
         self._args_pickle = args_pickle
         self._args_json = args_json
         self._return_json = return_json
-        self._indexes = tuple(indexes)
+        self._hash_factory = hash_factory
         self._record_exceptions = record_exceptions
         self._reraise_exceptions = reraise_exceptions
         if self._reraise_exceptions and not self._record_exceptions:
@@ -119,12 +120,6 @@ class CachedFunction:
 
     def _table_schema(self):
         """Only creates a Table object, does not change the DB."""
-        extra_indexes = []
-        for index in self._indexes:
-            if isinstance(index, str):
-                index = (index,)
-            index_name = re.sub("[^a-zA-Z0-9]", "_", "__".join(index))
-            extra_indexes.append(Index(f"ix_{self._table_name}_{index_name}"), *index)
 
         metadata = MetaData()
         return Table(
@@ -144,14 +139,28 @@ class CachedFunction:
             Column("exception_str", Text, nullable=True),
             Column("state", Enum(FunctionState), nullable=False),
             Index(f"ix_{self._table_name}_func_name_args_hash", "func_name", "args_hash", unique=True),
-            *extra_indexes,
         )
+
+    def add_index(self, *column_expressions: str, index_name: str = None):
+        """
+        Add an index to the table if it does not exist yet.
+        
+        Can be called multiple times. The default index name is derived from the expression, and index existence checked by that name.
+        You may end up with multiple indexes on the same columns/expressions if you change the expression strings.
+
+        The usual use is to use this with JSON columns, e.g. `add_index("args_json->>'x'", "return_json->2")`.
+        """
+        with self._get_locked_session() as session:
+            if index_name is None:
+                index_name = f"ix_{self._table_name}_" + "_".join(column_expressions)
+                index_name = re.sub("[^a-zA-Z0-9]", "_", index_name)
+            Index(index_name, *column_expressions).create(self._engine, checkfirst=True)
 
     def _hash_obj(self, obj: Any) -> str:
         """
         Stable object hasher that can work with many standard types, iterables, dataclasses.
         """
-        return serialize.hash_obj(obj, sort_keys=True)
+        return serialize.hash_obj(obj, sort_keys=True, hash_factory=self._hash_factory)
 
     def _jsonize(self, obj: Any) -> Any:
         """Smart serializer that can work with iterables and dataclasses."""

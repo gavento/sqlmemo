@@ -27,15 +27,16 @@ def _hash_helper(obj: Any, hash, sort_keys: bool):
         raise TypeError(f"Unsupported type in hash_obj: {type(obj)}")
 
 
-def hash_obj(obj: Any, sort_keys: bool = True) -> str:
+def hash_obj(obj: Any, sort_keys: bool = True, hash_factory=hashlib.sha256) -> str:
     """
-    Smart SHA256 object hasher that can work with dataclasses, iterables, float NaNs, etc.
+    Smart object hasher that can work with dataclasses, iterables, float NaNs, etc.
 
     Also hashes the types of the parameters (so e.g. `(1,2)` and `[1,2]` are distinct).
     By default, dictionaries are hashed including the ordering of the values,
     set `sort_dicts=True` to have their keys sorted. Raises `TypeError` on an unknown type.
+    Uses SHA256 from hashlib by default.
     """
-    hash = hashlib.sha256()
+    hash = hash_factory()
     _hash_helper(obj, hash, sort_keys=sort_keys)
     return hash.hexdigest()
 
