@@ -1,3 +1,4 @@
+import pickle
 import unittest
 from unittest.mock import patch
 
@@ -69,30 +70,56 @@ class CachedFunctionTest(unittest.TestCase):
         assert fun2(2, 4) == 7
         assert count2 == 1
 
-    # WIP below
+    # WIP below: JSON, Pickle, exceptions (store, rerun/reraise), parallel/running, ...
+    # FIX: Json columns with None vs 'none'
 
     def test_caching_with_exception(self):
-        # Create a CachedFunction instance
         cached_func = CachedFunction()
 
-        # Define a function that raises an exception
         @cached_func
         def error_function():
             raise ValueError("Something went wrong")
 
-        # Call the function and catch the exception
         with self.assertRaises(ValueError):
             error_function()
-
-        # Call the function again
-        result = error_function()
-
-        # Assert that the result is None
-        self.assertIsNone(result)
-
-        # Assert that the function was called twice
+        with self.assertRaises(ValueError):
+            error_function()
         self.assertEqual(error_function._func.call_count, 2)
 
+    def test_hash_args(self):
+        cached_func = CachedFunction()
+
+        @cached_func
+        def my_function(a, b, c):
+            return a + b + c
+
+        self.assertEqual(cached_func.hash_args(1, 2, 3), "08934e18c19ac2c1d1fd021bc6e33a522ef6fdadf9ffd082235ab9f09d02c519")
+        self.assertEqual(cached_func.hash_args(1, 2, c=3), "08934e18c19ac2c1d1fd021bc6e33a522ef6fdadf9ffd082235ab9f09d02c519")
+        self.assertEqual(cached_func.hash_args(2, 3, 4), "24242d2d2a29d91d628442c427c9890d8d9ce8a7d74b7fee56323521bec4c923")
+
+    def test_get_record_by_hash(self):
+        cached_func = CachedFunction()
+
+        @cached_func
+        def my_function(a, b, c):
+            return a + b + c
+
+        my_function(1, 2, 3)
+        record = cached_func.get_record_by_hash("08934e18c19ac2c1d1fd021bc6e33a522ef6fdadf9ffd082235ab9f09d02c519")
+        assert pickle.loads(record["return_pickle"]) == 6
+        assert record["state"] == FunctionState.DONE.value
+
+    def test_get_record_by_args(self):
+        cached_func = CachedFunction()
+
+        @cached_func
+        def my_function(a, b, c):
+            return a + b + c
+
+        my_function(b=2, a=1, c=3)
+        record = cached_func.get_record_by_args(1, 2, c=3)
+        assert pickle.loads(record["return_pickle"]) == 6
+        assert record["state"] == FunctionState.DONE.value
 
 if __name__ == "__main__":
     unittest.main()

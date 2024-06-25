@@ -58,6 +58,35 @@ class CachedFunction:
         record_exceptions: bool | Iterable[Type] = False,
         reraise_exceptions: bool | Iterable[Type] = False,
     ):
+        """
+        Initializes a CachedFunction object.
+
+        The cache stores the pickled result of the function, indexed by a hash of the function arguments and the function name.
+
+        Parameters:
+        - db (str | Engine | None): The database URL or SQLAlchemy Engine object. If None, an in-memory temporary DB is used.
+        - func (Callable | None): The function to be cached. If None, the function will be set later using the `__call__` method.
+        - func_name (str | None): The name of the function. If None, the name will be inferred from the function object.
+        - table_name (str | None): The name of the database table to store the cached results. If None, a default table name will be used.
+        - hash_factory (Callable): The hash function to use for hashing the function arguments. SHA256 by default.
+        - args_pickle (bool | Callable): Whether to store pickled function arguments in the cache.
+        - args_json (bool | Callable): Whether to store JSON-encoded function arguments in the cache.
+        - return_json (bool | Callable): Whether to store JSON-encoded function return value in the cache.
+        - record_exceptions (bool | Iterable[Type]): Whether to record exceptions raised by the function.
+        - reraise_exceptions (bool | Iterable[Type]): Whether to reraise exceptions previously raised by the function on subsequent calls with the same arguments.
+
+        The `args_*` and `return_*` parameters can be set to True or False to enable or disable the respective feature, or to a callable to transform the
+        value before storing it. This is useful if you e.g. want to extract only some arguments or their features to be stored in the cache (e.g. as JSON).
+        You can also split arguments to be stored as JSON vs pickled. Note that the argument values are NEVER used to match future calls, only their hashes.
+        Example: `args_json=lambda args: {"x": args["x"], "y": args["y"], "z_len": len(args["z"])}, return_json=lambda r: r[0]`.
+
+        For the `*_exceptions`, True stores/reraises all exceptions, False disables all, an iterable of types allows subclasses of the given exception types.
+        If an exceprion is not reraised on a subsequent call, the computation is repeated and the new outcome is stored, overwriting the old record.
+
+        Raises:
+        - ValueError: If `reraise_exceptions` is True but `record_exceptions` is False.
+        - The stored exception: If `reraise_exceptions` allows the exception and the exception is not recorded in the cache.
+        """
         self._func_name = func_name
         self._table_name = table_name
         self._func = None
@@ -234,10 +263,27 @@ class CachedFunction:
             exception_str=exception_str,
             state=state,
         )
+    
+    def hash_args(self, *args, **kwargs) -> str:
+        """Return the hash of the function arguments, can be used to check the cache."""
+        args_dict = self._args_to_dict(args, kwargs)
+        return self._hash_obj(args_dict)
+    
+    def get_record_by_hash(self, hash: str) -> dict[str, Any] | None:
+        """Return the database record for the given hash, if it exists."""
+        with self._get_locked_session() as session:
+            query = self._table.select().where(self._table.c.args_hash == hash)
+            # Load the record as an ORM class instance
+
+
+    
+    def get_record_by_args(self, *args, **kwargs) -> dict[str, Any] | None:
+        """Return the database record for the given arguments, if it exists."""
+        return self.get_record_by_hash(self.hash_args(*args, **kwargs))
 
     def _call_func(self, *args, **kwargs):
-        args_dict = self._args_to_dict(args, kwargs)
-        args_hash = self._hash_obj(args_dict)
+        args_hash = self.hash_args(*args, **kwargs)
+        args_dict = self._args_to_dict(args, kwargs) # Used below
 
         with self._get_locked_session() as session:  # Transaction
 
