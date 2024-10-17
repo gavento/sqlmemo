@@ -1,0 +1,10 @@
+{
+  "image": "mcr.microsoft.com/devcontainers/python:3.12",
+  "features": {
+    "ghcr.io/devcontainers/features/python:1": {
+      "toolsToInstall": "poetry"
+    }
+  },
+  "postStartCommand": "poetry install"
+}
+
