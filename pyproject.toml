@@ -12,6 +12,7 @@ canonicaljson = "^2.0.0"
 
 [tool.poetry.group.dev.dependencies]
 black = "^24.4.2"
+pytest = "^8.3.2"
 
 [build-system]
 requires = ["poetry-core"]
