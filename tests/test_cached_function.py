@@ -61,10 +61,6 @@ class CachedFunctionTest(unittest.TestCase):
         assert fun1(2, 3) == 5
         assert fun1(3, 3) == 6
         assert count1 == 2
-
-        # with fun1.__sqlcache__._get_locked_session() as session:
-        #     print(session.execute(text("SELECT * FROM tab0")).fetchall())
-
         assert fun2(2, 3) == 5 # NB!!!
         assert count2 == 0
         assert fun2(2, 4) == 7
@@ -85,6 +81,7 @@ class CachedFunctionTest(unittest.TestCase):
         self.assertEqual(error_function.__sqlcache__.cache_misses, 2)
 
     def test_hash_args(self):
+        """Tests the stability of the hashes."""
         cached_func = CachedFunction()
 
         @cached_func
@@ -120,6 +117,56 @@ class CachedFunctionTest(unittest.TestCase):
         assert record and record.return_pickle
         assert pickle.loads(record.return_pickle) == 6
         assert record.state == FunctionState.DONE
+
+    def test_caching_counting_and_clearing(self):
+        engine = create_engine("sqlite:///:memory:")
+
+        @CachedFunction(engine)
+        def f1(x):
+            return x + 1
+
+        @CachedFunction(engine)
+        def f2(x):
+            return x + 2
+
+        assert f1(1) == 2
+        assert f1(2) == 3
+        assert f1(2) == 3
+        assert f2(1) == 3
+        assert f2(1) == 3
+        assert f2(1) == 3
+        assert f2(1) == 3
+        assert f1.__sqlcache__.cache_misses == 2
+        assert f1.__sqlcache__.cache_hits == 1
+        assert f1.__sqlcache__.get_cache_size() == 2
+        assert f2.__sqlcache__.cache_misses == 1
+        assert f2.__sqlcache__.cache_hits == 3
+        assert f2.__sqlcache__.get_cache_size() == 1
+
+        @CachedFunction(engine)
+        def f1(x):
+            return x + 1
+
+        assert f1(1) == 2
+        assert f1(2) == 3
+        assert f1(3) == 4
+        assert f1(3) == 4
+        assert f1.__sqlcache__.cache_misses == 1
+        assert f1.__sqlcache__.cache_hits == 3
+        assert f1.__sqlcache__.get_cache_size() == 3
+
+        f1.__sqlcache__.clear_cache()
+        assert f1.__sqlcache__.get_cache_size() == 0
+        assert f1(1) == 2
+        assert f1(5) == 6
+        assert f2(1) == 3
+        assert f1.__sqlcache__.cache_misses == 3 # Note this includes the 1 from previous block
+        assert f1.__sqlcache__.cache_hits == 3
+        assert f1.__sqlcache__.get_cache_size() == 2
+        assert f2.__sqlcache__.cache_misses == 1
+        assert f2.__sqlcache__.cache_hits == 4
+        assert f2.__sqlcache__.get_cache_size() == 1
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -283,6 +283,26 @@ class CachedFunction:
         """
         return self._cache_misses
 
+    def get_cache_size(self) -> int:
+        """
+        Return the number of cached results in the database.
+        
+        This is a slow operation as it requires a database query.
+        """
+        with self._get_locked_session() as session:
+            # Count ids where func_name matches
+            return session.scalars(select(func.count(CachedFunctionEntry.id)).filter_by(func_name=self._func_name)).first()
+
+    def clear_cache(self) -> None:
+        """
+        Clear all cached results for this function.
+        
+        This is a slow operation as it requires a database query.
+        """
+        with self._get_locked_session() as session:
+            # Delete all rows where func_name matches
+            session.execute(CachedFunctionEntry.__table__.delete().where(CachedFunctionEntry.func_name == self._func_name))
+
     def __repr__(self) -> str:
         return f"<{self.__class__.__name__} {self._func_name!r} at {self._db_url!r} ({self.cache_hits} hits, {self.cache_misses} misses)>"
 
