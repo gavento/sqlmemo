@@ -74,9 +74,7 @@ class CachedFunctionTest(unittest.TestCase):
     # FIX: Json columns with None vs 'none'
 
     def test_caching_with_exception(self):
-        cached_func = CachedFunction()
-
-        @cached_func
+        @CachedFunction()
         def error_function():
             raise ValueError("Something went wrong")
 
@@ -84,7 +82,7 @@ class CachedFunctionTest(unittest.TestCase):
             error_function()
         with self.assertRaises(ValueError):
             error_function()
-        self.assertEqual(error_function._func.call_count, 2)
+        self.assertEqual(error_function.__sqlcache__.cache_misses, 2)
 
     def test_hash_args(self):
         cached_func = CachedFunction()
@@ -105,9 +103,10 @@ class CachedFunctionTest(unittest.TestCase):
             return a + b + c
 
         my_function(1, 2, 3)
-        record = cached_func.get_record_by_hash("08934e18c19ac2c1d1fd021bc6e33a522ef6fdadf9ffd082235ab9f09d02c519")
-        assert pickle.loads(record["return_pickle"]) == 6
-        assert record["state"] == FunctionState.DONE.value
+        record = cached_func.get_record_by_arg_hash("08934e18c19ac2c1d1fd021bc6e33a522ef6fdadf9ffd082235ab9f09d02c519")
+        assert record and record.return_pickle
+        assert pickle.loads(record.return_pickle) == 6
+        assert record.state == FunctionState.DONE
 
     def test_get_record_by_args(self):
         cached_func = CachedFunction()
@@ -118,8 +117,9 @@ class CachedFunctionTest(unittest.TestCase):
 
         my_function(b=2, a=1, c=3)
         record = cached_func.get_record_by_args(1, 2, c=3)
-        assert pickle.loads(record["return_pickle"]) == 6
-        assert record["state"] == FunctionState.DONE.value
+        assert record and record.return_pickle
+        assert pickle.loads(record.return_pickle) == 6
+        assert record.state == FunctionState.DONE
 
 if __name__ == "__main__":
     unittest.main()

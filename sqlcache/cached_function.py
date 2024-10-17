@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import enum
 import functools
 import getpass
@@ -9,13 +10,15 @@ import re
 import socket
 import threading
 from contextlib import contextmanager
-from typing import Any, Callable, Iterable, Optional, Type
+from typing import Any, Callable, Generator, Iterable, Optional, Type
 
+from pytest import Session
 from sqlalchemy import (
     JSON,
     TIMESTAMP,
     Column,
     Enum,
+    FetchedValue,
     Index,
     Integer,
     LargeBinary,
@@ -25,9 +28,11 @@ from sqlalchemy import (
     Text,
     create_engine,
     func,
+    select,
 )
 from sqlalchemy.engine import Engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import DeclarativeBase, mapped_column, Mapped
 
 from . import serialize
 
@@ -36,6 +41,37 @@ class FunctionState(enum.Enum):
     RUNNING = "RUNNING"
     DONE = "DONE"
     ERROR = "ERROR"
+
+
+class Base(DeclarativeBase):
+    type_annotation_map = {
+        datetime.datetime: TIMESTAMP(timezone=True),
+        bytes: LargeBinary,
+    }
+
+
+class CachedFunctionEntry(Base):
+    __tablename__ = 'cached_function'
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    timestamp: Mapped[datetime.datetime]
+    func_name: Mapped[str]
+    args_hash: Mapped[str]
+    state: Mapped[FunctionState]
+    user: Mapped[Optional[str]]
+    hostname: Mapped[Optional[str]]
+    runtime_seconds: Mapped[Optional[float]]
+    args_pickle: Mapped[Optional[bytes]]
+    args_json: Mapped[Optional[Any]] = mapped_column(JSON, nullable=True)
+    return_pickle: Mapped[Optional[bytes]]
+    return_json: Mapped[Optional[Any]] = mapped_column(JSON, nullable=True)
+    exception_pickle: Mapped[Optional[bytes]]
+    exception_str: Mapped[Optional[Any]] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        Index('ix_cached_function_func_name_args_hash',
+              'func_name', 'args_hash', unique=True),
+    )
 
 
 class CachedFunction:
@@ -87,6 +123,9 @@ class CachedFunction:
         - ValueError: If `reraise_exceptions` is True but `record_exceptions` is False.
         - The stored exception: If `reraise_exceptions` allows the exception and the exception is not recorded in the cache.
         """
+        if callable(db) and not isinstance(db, Engine):
+            raise TypeError(f"Expected Engine or str as `db`, got {type(db)}. Hint: use `@CachedFunction()` instead of `@CachedFunction`")
+        
         self._func_name = func_name
         self._table_name = table_name
         self._func = None
@@ -101,19 +140,22 @@ class CachedFunction:
         self._record_exceptions = record_exceptions
         self._reraise_exceptions = reraise_exceptions
         if self._reraise_exceptions and not self._record_exceptions:
-            raise ValueError("Can't reraise exceptions without recording them - configuration error?")
+            raise ValueError(
+                "Can't reraise exceptions without recording them - configuration error?")
 
         self._lock = threading.Lock()
         self._engine: Optional[Engine] = None
-        self._sessionmaker: Optional[sessionmaker] = None
-        self._table: Optional[Table] = None
-        self._db_url: Optional[str] = None
+        self._db_url: str
+        self._db_initialized = False
+
+        self._cache_hits = 0
+        self._cache_misses = 0
 
         if db is None:
             db = self.DEFAULT_DB_URL
         if isinstance(db, Engine):
             self._engine = db
-            self._db_url = db.url  # Only as informative at this point
+            self._db_url = str(db.url)  # Only as informative at this point
         else:
             self._db_url = db
 
@@ -125,65 +167,45 @@ class CachedFunction:
         if self._func_name is None:
             self._func_name = self._func.__qualname__
         if self._table_name is None:
-            self._table_name = f"{self.DEFAULT_TABLE_NAME_PREFIX}{self._func_name}"
+            self._table_name = f"{
+                self.DEFAULT_TABLE_NAME_PREFIX}{self._func_name}"
 
     @contextmanager
-    def _get_locked_session(self):
+    def _get_locked_session(self) -> Generator[Session, None, None]:
         """
         Lock the mutex and return a new database session, only to be used locally.
         Use only as a context manager!
         """
         with self._lock:
             self._prepare_database()
-            yield self._sessionmaker()
+            yield Session(self._engine)  # type: ignore
 
-    def _prepare_database(self):
+    def _prepare_database(self) -> None:
         """Create DB connection and ensure the tables exist. Assumes self._lock is held."""
         assert self._lock.locked()
         if self._engine is None:
             self._engine = create_engine(self._db_url)
-        if self._sessionmaker is None:
-            self._sessionmaker = sessionmaker(bind=self._engine)
-            self._table = self._table_schema()
-            self._table.metadata.create_all(self._engine)
+        if not self._db_initialized:
+            Base.metadata.create_all(self._engine)
+            self._db_initialized = True
 
-    def _table_schema(self):
-        """Only creates a Table object, does not change the DB."""
-
-        metadata = MetaData()
-        return Table(
-            self._table_name,
-            metadata,
-            Column("id", Integer, primary_key=True),
-            Column("timestamp", TIMESTAMP),
-            Column("user", String, nullable=True),
-            Column("hostname", String, nullable=True),
-            Column("func_name", String),
-            Column("args_hash", String),
-            Column("args_pickle", LargeBinary, nullable=True),
-            Column("args_json", JSON, nullable=True),
-            Column("return_pickle", LargeBinary, nullable=True),
-            Column("return_json", JSON, nullable=True),
-            Column("exception_pickle", LargeBinary, nullable=True),
-            Column("exception_str", Text, nullable=True),
-            Column("state", Enum(FunctionState), nullable=False),
-            Index(f"ix_{self._table_name}_func_name_args_hash", "func_name", "args_hash", unique=True),
-        )
-
-    def add_index(self, *column_expressions: str, index_name: str = None):
+    def add_index(self, *column_expressions: str, index_name: str | None = None):
         """
         Add an index to the table if it does not exist yet.
-        
+
         Can be called multiple times. The default index name is derived from the expression, and index existence checked by that name.
         You may end up with multiple indexes on the same columns/expressions if you change the expression strings.
 
         The usual use is to use this with JSON columns, e.g. `add_index("args_json->>'x'", "return_json->2")`.
         """
         with self._get_locked_session() as session:
+            assert self._engine is not None
             if index_name is None:
-                index_name = f"ix_{self._table_name}_" + "_".join(column_expressions)
+                index_name = f"ix_{self._table_name}_" + \
+                    "_".join(column_expressions)
                 index_name = re.sub("[^a-zA-Z0-9]", "_", index_name)
-            Index(index_name, *column_expressions).create(self._engine, checkfirst=True)
+            Index(index_name, *column_expressions).create(self._engine,
+                                                          checkfirst=True)
 
     def _hash_obj(self, obj: Any) -> str:
         """
@@ -201,6 +223,7 @@ class CachedFunction:
         The extra keyword and positional arguments are preserved, named as in the function signature
         (usually `*args` and `**kwargs`).
         """
+        assert self._func_sig is not None
         bound_args = self._func_sig.bind(*args, **kwargs)
         bound_args.apply_defaults()
         return dict(bound_args.arguments)
@@ -227,131 +250,164 @@ class CachedFunction:
             return param
         return isinstance(exception, tuple(param))
 
-    def _insert_row_data(self, args_dict, args_hash, value=None, exception=None, running=False):
-        if running:
-            return_json = None
-            return_pickle = None
-            exception_pickle = None
-            exception_str = None
-            state = FunctionState.RUNNING
-        elif exception is None:
-            return_json = self._encode_value_helper(value, self._return_json, _json=True)
-            return_pickle = self._encode_value_helper(value, True, _pickle=True)
-            exception_pickle = None
-            exception_str = None
-            state = FunctionState.DONE
-        else:
-            return_json = None
-            return_pickle = None
-            exception_pickle = pickle.dumps(exception)
-            exception_str = str(exception)
-            state = FunctionState.ERROR
-
-        args_json = self._encode_value_helper(args_dict, self._args_json, _json=True)
-        args_pickle = self._encode_value_helper(args_dict, self._args_pickle, _pickle=True)
-        return dict(
-            timestamp=func.now(),
-            user=getpass.getuser(),
-            hostname=socket.gethostname(),
-            func_name=self._func_name,
-            args_hash=args_hash,
-            args_pickle=args_pickle,
-            args_json=args_json,
-            return_pickle=return_pickle,
-            return_json=return_json,
-            exception_pickle=exception_pickle,
-            exception_str=exception_str,
-            state=state,
-        )
-    
     def hash_args(self, *args, **kwargs) -> str:
         """Return the hash of the function arguments, can be used to check the cache."""
         args_dict = self._args_to_dict(args, kwargs)
         return self._hash_obj(args_dict)
-    
-    def get_record_by_hash(self, hash: str) -> dict[str, Any] | None:
+
+    def get_record_by_arg_hash(self, args_hash: str) -> CachedFunctionEntry | None:
         """Return the database record for the given hash, if it exists."""
         with self._get_locked_session() as session:
-            query = self._table.select().where(self._table.c.args_hash == hash)
-            # Load the record as an ORM class instance
+            return session.scalars(select(CachedFunctionEntry).filter_by(
+                func_name=self._func_name, args_hash=args_hash)).one_or_none()
 
-
-    
-    def get_record_by_args(self, *args, **kwargs) -> dict[str, Any] | None:
+    def get_record_by_args(self, *args, **kwargs) -> CachedFunctionEntry | None:
         """Return the database record for the given arguments, if it exists."""
-        return self.get_record_by_hash(self.hash_args(*args, **kwargs))
+        return self.get_record_by_arg_hash(self.hash_args(*args, **kwargs))
 
-    def _call_func(self, *args, **kwargs):
+    @property
+    def cache_hits(self) -> int:
+        """
+        Return the number of cache hits.
+        
+        Note this is only recorded for this cache instance, not stored in the database.
+        """
+        return self._cache_hits
+
+    @property
+    def cache_misses(self) -> int:
+        """
+        Return the number of cache misses (wrapped function calls).
+        
+        Note this is only recorded for this cache instance, not stored in the database.
+        """
+        return self._cache_misses
+
+    def __repr__(self) -> str:
+        return f"<{self.__class__.__name__} {self._func_name!r} at {self._db_url!r} ({self.cache_hits} hits, {self.cache_misses} misses)>"
+
+    # def _upsert_row(self, session, data):
+    #     """Insert or update a row in the database"""
+    #     # Is the call present?
+    #     assert self._table is not None
+    #     query = (
+    #         self._table.select()
+    #         .where(self._table.c.func_name == data["func_name"])
+    #         .where(self._table.c.args_hash == data["args_hash"])
+    #     )
+    #     result = session.execute(query).fetchone()
+    #     if result:
+    #         query = self._table.update().values(data).where(self._table.c.id == result.id)
+    #     else:
+    #         query = self._table.insert().values(data)
+    #     session.execute(query)
+
+    def _call_func_sync(self, *args, **kwargs):
+        """The decorated function call, with caching and exception handling."""
+        assert self._func is not None
         args_hash = self.hash_args(*args, **kwargs)
-        args_dict = self._args_to_dict(args, kwargs) # Used below
+        args_dict = self._args_to_dict(args, kwargs)  # Used below
 
         with self._get_locked_session() as session:  # Transaction
-
             # Check for existing result
-            query = (
-                self._table.select()
-                .where(self._table.c.func_name == self._func_name)
-                .where(self._table.c.args_hash == args_hash)
-            )
-            result = session.execute(query).fetchone()
+            entry = session.scalars(select(CachedFunctionEntry).filter_by(
+                func_name=self._func_name, args_hash=args_hash)).one_or_none()
 
-            if result:
-                if result.state == FunctionState.DONE:
+            if entry is not None:
+                if entry.state == FunctionState.DONE:
                     # Cache hit
-                    return pickle.loads(result.return_pickle)
-                elif result.state == FunctionState.RUNNING:
+                    assert entry.return_pickle is not None
+                    self._cache_hits += 1
+                    return pickle.loads(entry.return_pickle)
+                elif entry.state == FunctionState.RUNNING:
                     # Computation is already running
-                    raise NotImplementedError("TODO - complex logic needed")
-                else:
+                    raise NotImplementedError(
+                        "Function already running - TODO: complex waiting logic needed")
+                elif entry.state == FunctionState.ERROR:
                     # Last execution returned an exception
-
                     if self._reraise_exceptions is not False:
                         # Check if the exception should be reraised
-                        if result.exception_pickle is None:
+                        if entry.exception_pickle is None:
                             raise RuntimeError(
-                                f"Exception not recorded, can't reraise from {self._table_name}(id={result.id})"
+                                f"Exception not recorded, can't reraise from {
+                                    self._table_name}(id={entry.id}); original exception string: {entry.exception_str!r}"
                             )
-                        exc = pickle.loads(result.exception_pickle)
+                        exc = pickle.loads(entry.exception_pickle)
                         if self._exception_check_helper(exc, self._reraise_exceptions):
+                            self._cache_hits += 1
                             raise exc
-                    # Otherwise just re-run the computation
-
-            # Record as running
-            self._upsert_row(session, self._insert_row_data(args_dict, args_hash, running=True))
+                        # Otherwise just re-run the computation below
+            else:
+                # Record as running
+                entry = CachedFunctionEntry(
+                    func_name=self._func_name,
+                    args_hash=args_hash,
+                    args_json=self._encode_value_helper(
+                        args_dict, self._args_json, _json=True),
+                    args_pickle=self._encode_value_helper(
+                        args_dict, self._args_pickle, _pickle=True),
+                    user=getpass.getuser(),
+                    hostname=socket.gethostname(),
+                    timestamp=func.now(),
+                    state=FunctionState.RUNNING)
+            session.add(entry)
+            session.commit()
+            entry_id = entry.id
 
         # Run the function
+        exc = None
         try:
+            self._cache_misses += 1
             value = self._func(*args, **kwargs)
         except Exception as e:
-            if self._exception_check_helper(e, self._record_exceptions):
-                with self._get_locked_session() as session:  # Transaction
-                    self._upsert_row(session, self._insert_row_data(args_dict, args_hash, exception=e))
-            raise e
+            exc = e
 
         # Record the result
         with self._get_locked_session() as session:  # Transaction
-            self._upsert_row(session, self._insert_row_data(args_dict, args_hash, value=value))
+            entry = session.get(CachedFunctionEntry, entry_id)
+            if entry is None:
+                raise RuntimeError(f"Record for an already running {
+                                   self._func_name} missing in the database (expected ID: {entry_id})")
+
+            entry.runtime_seconds = (
+                datetime.datetime.now() - entry.timestamp).total_seconds()
+            if exc is not None:
+                if self._exception_check_helper(exc, self._record_exceptions):
+                    entry.exception_pickle = pickle.dumps(exc)
+                    entry.exception_str = str(exc)
+                    entry.state = FunctionState.ERROR
+                else:
+                    # Do not record the exception, forget the function was ever running
+                    session.delete(entry)
+                    session.commit()
+                    raise exc
+            else:
+                # Record the result
+                entry.state = FunctionState.DONE
+                entry.return_json = self._encode_value_helper(
+                    value, self._return_json, _json=True)
+                entry.return_pickle = self._encode_value_helper(
+                    value, True, _pickle=True)
+        session.add(entry)
+        session.commit()
+
+        if exc is not None:
+            raise exc
+        else:
             return value
 
-    def _upsert_row(self, session, data):
-        """Insert or update a row in the database"""
-        # Is the call present?
-        query = (
-            self._table.select()
-            .where(self._table.c.func_name == data["func_name"])
-            .where(self._table.c.args_hash == data["args_hash"])
-        )
-        result = session.execute(query).fetchone()
-        if result:
-            query = self._table.update().values(data).where(self._table.c.id == result.id)
-        else:
-            query = self._table.insert().values(data)
-        session.execute(query)
-
     async def _call_func_async(self, *args, **kwargs):
+        """
+        Placeholder for async function support.
+        """
         raise NotImplementedError("Async functions are not yet supported")
 
     def __call__(self, func: Callable) -> Callable:
+        """
+        Decorator to set the function to be cached.
+
+        Will be able to handle async functions in the future.
+        """
         self._set_func(func)
         if asyncio.iscoroutinefunction(func):
 
@@ -365,7 +421,7 @@ class CachedFunction:
 
             @functools.wraps(func)
             def wrapper(*args, **kwargs):
-                return self._call_func(*args, **kwargs)
+                return self._call_func_sync(*args, **kwargs)
 
             wrapper.__setattr__(self.FUNCTION_CACHE_KEY, self)
             return wrapper
