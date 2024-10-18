@@ -38,8 +38,8 @@ class CachedFunctionEntry(Base):
     runtime_seconds: Mapped[Optional[float]]
     args_pickle: Mapped[Optional[bytes]]
     args_json: Mapped[Optional[Any]] = mapped_column(JSON, nullable=True)
-    return_pickle: Mapped[Optional[bytes]]
-    return_json: Mapped[Optional[Any]] = mapped_column(JSON, nullable=True)
+    value_pickle: Mapped[Optional[bytes]]
+    value_json: Mapped[Optional[Any]] = mapped_column(JSON, nullable=True)
     exception_pickle: Mapped[Optional[bytes]]
     exception_str: Mapped[Optional[Any]] = mapped_column(Text, nullable=True)
 

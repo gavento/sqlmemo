@@ -10,7 +10,7 @@ from sqlcache.cached_function import CachedFunction, FunctionState
 class CachedFunctionTest(unittest.TestCase):
 
     def _is_hit(self, cached_f, *args, **kwargs):
-        return cached_f._sqlcache.get_record_by_args(*args, **kwargs) is not None
+        return cached_f._sqlcache.get_record(*args, **kwargs) is not None
 
     def test_simple_caching(self):
         count = 0
@@ -107,10 +107,10 @@ class CachedFunctionTest(unittest.TestCase):
             return a + b + c
 
         my_function(1, 2, 3)
-        record = cached_func.get_record_by_arg_hash(
+        record = cached_func.get_record_by_hash(
             "08934e18c19ac2c1d1fd021bc6e33a522ef6fdadf9ffd082235ab9f09d02c519")
-        assert record and record.return_pickle
-        assert pickle.loads(record.return_pickle) == 6
+        assert record and record.value_pickle
+        assert pickle.loads(record.value_pickle) == 6
         assert record.state == FunctionState.DONE
 
     def test_get_record_by_args(self):
@@ -121,9 +121,9 @@ class CachedFunctionTest(unittest.TestCase):
             return a + b + c
 
         my_function(b=2, a=1, c=3)
-        record = cached_func.get_record_by_args(1, 2, c=3)
-        assert record and record.return_pickle
-        assert pickle.loads(record.return_pickle) == 6
+        record = cached_func.get_record(1, 2, c=3)
+        assert record and record.value_pickle
+        assert pickle.loads(record.value_pickle) == 6
         assert record.state == FunctionState.DONE
 
     def test_caching_counting_and_clearing(self):

@@ -49,7 +49,7 @@ class CachedFunction:
         hash_factory: Callable = hashlib.sha256,
         args_pickle: bool | Callable = False,
         args_json: bool | Callable = False,
-        return_json: bool | Callable = False,
+        value_json: bool | Callable = False,
         record_exceptions: bool | Iterable[Type] = False,
         reraise_exceptions: bool | Iterable[Type] = False,
         use_dill: bool = False,
@@ -68,7 +68,7 @@ class CachedFunction:
         - hash_factory (Callable): The hash function to use for hashing the function arguments. SHA256 by default.
         - args_pickle (bool | Callable): Whether to store pickled function arguments in the cache.
         - args_json (bool | Callable): Whether to store JSON-encoded function arguments in the cache.
-        - return_json (bool | Callable): Whether to store JSON-encoded function return value in the cache.
+        - value_json (bool | Callable): Whether to store JSON-encoded function return value in the cache.
         - record_exceptions (bool | Iterable[Type]): Whether to record exceptions raised by the function.
         - reraise_exceptions (bool | Iterable[Type]): Whether to reraise exceptions previously raised by the
           function on subsequent calls with the same arguments.
@@ -79,10 +79,10 @@ class CachedFunction:
           This is useful if you change the default arguments of the function and want to distinguish between calls with different defaults.
           Having it off allows e.g. adding new default arguments without invalidating existing cache records.
 
-        The `args_*` and `return_*` parameters can be set to True or False to enable or disable the respective feature, or to a callable to transform the
+        The `args_*` and `value_json` parameters can be set to True or False to enable or disable the respective feature, or to a callable to transform the
         value before storing it. This is useful if you e.g. want to extract only some arguments or their features to be stored in the cache (e.g. as JSON).
         You can also split arguments to be stored as JSON vs pickled. Note that the argument values are NEVER used to match future calls, only their hashes.
-        Example: `args_json=lambda args: {"x": args["x"], "y": args["y"], "z_len": len(args["z"])}, return_json=lambda r: r[0]`.
+        Example: `args_json=lambda x, y, z: dict(x=x, sy=str(y), z_len=len(z)}, value_json=lambda r: r[0]`.
 
         For the `*_exceptions`, True stores/reraises all exceptions, False disables all, an iterable of types allows subclasses of the given exception types.
         If an exceprion is not reraised on a subsequent call, the computation is repeated and the new outcome is stored, overwriting the old record.
@@ -104,7 +104,7 @@ class CachedFunction:
 
         self._args_pickle = args_pickle
         self._args_json = args_json
-        self._return_json = return_json
+        self._value_json = value_json
         self._hash_factory = hash_factory
         self._record_exceptions = record_exceptions
         self._reraise_exceptions = reraise_exceptions
@@ -202,7 +202,7 @@ class CachedFunction:
         else:
             return pickle.loads(data)
 
-    def _args_to_dict(self, args: tuple[Any], kwargs: dict[str, Any]) -> dict[str, Any]:
+    def _args_to_dict(self, args: tuple[Any], kwargs: dict[str, Any]) -> tuple[inspect.BoundArguments, dict[str, Any]]:
         """
         Create a single dict with all named arguments, optionally with default values applied.
         The extra keyword and positional arguments are preserved, named as in the function signature
@@ -212,15 +212,9 @@ class CachedFunction:
         bound_args = self._func_sig.bind(*args, **kwargs)
         if self._store_default_args:
             bound_args.apply_defaults()
-        return dict(bound_args.arguments)
+        return bound_args, dict(bound_args.arguments)
 
-    def _encode_value_helper(
-        self,
-        value: Any,
-        param: bool | Callable,
-        _json: bool = False,
-        _pickle: bool = False,
-    ) -> Any:
+    def _encode_value_helper(self, value: Any, param: bool | Callable, _json: bool = False, _pickle: bool = False) -> Any:
         if param is False:
             return None
         if callable(param):
@@ -231,6 +225,11 @@ class CachedFunction:
             value = self._dumps(value)
         return value
 
+    def _encode_args_helper(self, args: inspect.BoundArguments, param: bool | Callable, **kwargs) -> Any:
+        if param is False:
+            return None
+        return self._encode_value_helper(args, lambda args: param(*args.args, **args.kwargs) if callable(param) else dict(args.arguments), **kwargs)
+
     def _exception_check_helper(self, exception: Exception, param: bool | Iterable[Type]) -> bool:
         if isinstance(param, bool):
             return param
@@ -238,18 +237,18 @@ class CachedFunction:
 
     def hash_args(self, *args, **kwargs) -> str:
         """Return the hash of the function arguments, can be used to check the cache."""
-        args_dict = self._args_to_dict(args, kwargs)
+        _, args_dict = self._args_to_dict(args, kwargs)
         return self._hash_obj(args_dict)
 
-    def get_record_by_arg_hash(self, args_hash: str) -> CachedFunctionEntry | None:
+    def get_record_by_hash(self, args_hash: str) -> CachedFunctionEntry | None:
         """Return the database record for the given hash, if it exists."""
         with self._get_locked_session() as session:
             return session.scalars(sa.select(CachedFunctionEntry).filter_by(
                 func_name=self._func_name, args_hash=args_hash)).one_or_none()
 
-    def get_record_by_args(self, *args, **kwargs) -> CachedFunctionEntry | None:
+    def get_record(self, *args, **kwargs) -> CachedFunctionEntry | None:
         """Return the database record for the given arguments, if it exists."""
-        return self.get_record_by_arg_hash(self.hash_args(*args, **kwargs))
+        return self.get_record_by_hash(self.hash_args(*args, **kwargs))
 
     def get_stats(self) -> CachedFunctionStats:
         """
@@ -295,7 +294,7 @@ class CachedFunction:
         """The decorated function call, with caching and exception handling."""
         assert self._func is not None
         args_hash = self.hash_args(*args, **kwargs)
-        args_dict = self._args_to_dict(args, kwargs)  # Used below
+        bound_args, args_dict = self._args_to_dict(args, kwargs)
 
         with self._get_locked_session() as session:  # Transaction
             # Check for existing result
@@ -305,9 +304,9 @@ class CachedFunction:
             if entry is not None:
                 if entry.state == FunctionState.DONE:
                     # Cache hit
-                    assert entry.return_pickle is not None
+                    assert entry.value_pickle is not None
                     self._cache_hits += 1
-                    return self._loads(entry.return_pickle)
+                    return self._loads(entry.value_pickle)
                 elif entry.state == FunctionState.RUNNING:
                     # Computation is already running
                     warnings.warn(
@@ -333,10 +332,10 @@ class CachedFunction:
                 entry = CachedFunctionEntry(
                     func_name=self._func_name,
                     args_hash=args_hash,
-                    args_json=self._encode_value_helper(
-                        args_dict, self._args_json, _json=True),
-                    args_pickle=self._encode_value_helper(
-                        args_dict, self._args_pickle, _pickle=True),
+                    args_json=self._encode_args_helper(
+                        bound_args, self._args_json, _json=True),
+                    args_pickle=self._encode_args_helper(
+                        bound_args, self._args_pickle, _pickle=True),
                     user=getpass.getuser(),
                     hostname=socket.gethostname(),
                     timestamp=self._utctimestamp(),
@@ -376,9 +375,9 @@ class CachedFunction:
             else:
                 # Record the result
                 entry.state = FunctionState.DONE
-                entry.return_json = self._encode_value_helper(
-                    value, self._return_json, _json=True)
-                entry.return_pickle = self._encode_value_helper(
+                entry.value_json = self._encode_value_helper(
+                    value, self._value_json, _json=True)
+                entry.value_pickle = self._encode_value_helper(
                     value, True, _pickle=True)
             session.add(entry)
             session.commit()
