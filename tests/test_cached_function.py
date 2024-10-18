@@ -217,6 +217,9 @@ class CachedFunctionTest(unittest.TestCase):
         assert st.cache_size == 0
         assert st.cache_done == 0
 
+# TODO: add test on: parallel calls (same and different args), exception re-raising,
+# db file stability (add testing DB, read it back), storing args as JSON and Pickle including using mapping to wacky objects,
+# dill for pickling complex objects, ...
 
 if __name__ == "__main__":
     unittest.main()
