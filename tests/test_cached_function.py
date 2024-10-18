@@ -1,4 +1,5 @@
 import pickle
+import time
 import unittest
 from unittest.mock import patch
 
@@ -7,6 +8,9 @@ from sqlcache.cached_function import CachedFunction, FunctionState
 
 
 class CachedFunctionTest(unittest.TestCase):
+
+    def _is_hit(self, cached_f, *args, **kwargs):
+        return cached_f._sqlcache.get_record_by_args(*args, **kwargs) is not None
 
     def test_simple_caching(self):
         count = 0
@@ -78,7 +82,7 @@ class CachedFunctionTest(unittest.TestCase):
             error_function()
         with self.assertRaises(ValueError):
             error_function()
-        self.assertEqual(error_function.__sqlcache__.cache_misses, 2)
+        self.assertEqual(error_function._sqlcache.cache_misses, 2)
 
     def test_hash_args(self):
         """Tests the stability of the hashes."""
@@ -122,7 +126,7 @@ class CachedFunctionTest(unittest.TestCase):
         engine = create_engine("sqlite:///:memory:")
 
         @CachedFunction(engine)
-        def f1(x):
+        def f1(x): # type: ignore
             return x + 1
 
         @CachedFunction(engine)
@@ -136,12 +140,12 @@ class CachedFunctionTest(unittest.TestCase):
         assert f2(1) == 3
         assert f2(1) == 3
         assert f2(1) == 3
-        assert f1.__sqlcache__.cache_misses == 2
-        assert f1.__sqlcache__.cache_hits == 1
-        assert f1.__sqlcache__.get_cache_size() == 2
-        assert f2.__sqlcache__.cache_misses == 1
-        assert f2.__sqlcache__.cache_hits == 3
-        assert f2.__sqlcache__.get_cache_size() == 1
+        assert f1._sqlcache.cache_misses == 2
+        assert f1._sqlcache.cache_hits == 1
+        assert f1._sqlcache.get_stats().cache_size == 2
+        assert f2._sqlcache.cache_misses == 1
+        assert f2._sqlcache.cache_hits == 3
+        assert f2._sqlcache.get_stats().cache_size == 1
 
         @CachedFunction(engine)
         def f1(x):
@@ -151,22 +155,62 @@ class CachedFunctionTest(unittest.TestCase):
         assert f1(2) == 3
         assert f1(3) == 4
         assert f1(3) == 4
-        assert f1.__sqlcache__.cache_misses == 1
-        assert f1.__sqlcache__.cache_hits == 3
-        assert f1.__sqlcache__.get_cache_size() == 3
+        assert f1._sqlcache.cache_misses == 1
+        assert f1._sqlcache.cache_hits == 3
+        assert f1._sqlcache.get_stats().cache_size == 3
 
-        f1.__sqlcache__.clear_cache()
-        assert f1.__sqlcache__.get_cache_size() == 0
+        f1._sqlcache.trim_cache()
+        assert f1._sqlcache.get_stats().cache_size == 0
         assert f1(1) == 2
         assert f1(5) == 6
         assert f2(1) == 3
-        assert f1.__sqlcache__.cache_misses == 3 # Note this includes the 1 from previous block
-        assert f1.__sqlcache__.cache_hits == 3
-        assert f1.__sqlcache__.get_cache_size() == 2
-        assert f2.__sqlcache__.cache_misses == 1
-        assert f2.__sqlcache__.cache_hits == 4
-        assert f2.__sqlcache__.get_cache_size() == 1
+        assert f1._sqlcache.cache_misses == 3 # Note this includes the 1 from previous block
+        assert f1._sqlcache.cache_hits == 3
+        assert f1._sqlcache.get_stats().cache_size == 2
+        assert f2._sqlcache.cache_misses == 1
+        assert f2._sqlcache.cache_hits == 4
+        assert f2._sqlcache.get_stats().cache_size == 1
 
+    def test_stats_and_trim(self):
+        
+        @CachedFunction()
+        def f(x):
+            time.sleep(0.01)
+            if x == 42:
+                raise ValueError("This is a test")
+            return x + 1
+        
+        for i in range(10):
+            f(i)
+        with self.assertRaises(ValueError):
+            f(42)
+        f(1)
+        
+        st = f._sqlcache.get_stats()
+        assert st.cache_size == 10
+        assert st.cache_running == 0
+        assert st.cache_done == 10
+        assert st.cache_error == 0
+        assert st.local_hits == 1
+        assert st.local_misses == 11
+
+        f._sqlcache.trim_cache(15)
+        st = f._sqlcache.get_stats()
+        assert st.cache_size == 10
+
+        print(f._sqlcache.get_record_by_args(0).timestamp)
+        print(f._sqlcache.get_record_by_args(1).timestamp)
+        f._sqlcache.trim_cache(5)
+        st = f._sqlcache.get_stats()
+        assert st.cache_size == 5
+        assert not self._is_hit(f, 42)
+        for i in range(10):
+            assert self._is_hit(f, i) == (i >= 5)
+
+        f._sqlcache.trim_cache()
+        st = f._sqlcache.get_stats()
+        assert st.cache_size == 0
+        assert st.cache_done == 0
 
 if __name__ == "__main__":
     unittest.main()
