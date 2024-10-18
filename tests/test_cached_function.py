@@ -65,7 +65,7 @@ class CachedFunctionTest(unittest.TestCase):
         assert fun1(2, 3) == 5
         assert fun1(3, 3) == 6
         assert count1 == 2
-        assert fun2(2, 3) == 5 # NB!!!
+        assert fun2(2, 3) == 5  # NB!!!
         assert count2 == 0
         assert fun2(2, 4) == 7
         assert count2 == 1
@@ -82,7 +82,7 @@ class CachedFunctionTest(unittest.TestCase):
             error_function()
         with self.assertRaises(ValueError):
             error_function()
-        self.assertEqual(error_function._sqlcache.cache_misses, 2)
+        self.assertEqual(error_function._sqlcache.get_stats().misses, 2)
 
     def test_hash_args(self):
         """Tests the stability of the hashes."""
@@ -92,9 +92,12 @@ class CachedFunctionTest(unittest.TestCase):
         def my_function(a, b, c):
             return a + b + c
 
-        self.assertEqual(cached_func.hash_args(1, 2, 3), "08934e18c19ac2c1d1fd021bc6e33a522ef6fdadf9ffd082235ab9f09d02c519")
-        self.assertEqual(cached_func.hash_args(1, 2, c=3), "08934e18c19ac2c1d1fd021bc6e33a522ef6fdadf9ffd082235ab9f09d02c519")
-        self.assertEqual(cached_func.hash_args(2, 3, 4), "24242d2d2a29d91d628442c427c9890d8d9ce8a7d74b7fee56323521bec4c923")
+        self.assertEqual(cached_func.hash_args(
+            1, 2, 3), "08934e18c19ac2c1d1fd021bc6e33a522ef6fdadf9ffd082235ab9f09d02c519")
+        self.assertEqual(cached_func.hash_args(
+            1, 2, c=3), "08934e18c19ac2c1d1fd021bc6e33a522ef6fdadf9ffd082235ab9f09d02c519")
+        self.assertEqual(cached_func.hash_args(
+            2, 3, 4), "24242d2d2a29d91d628442c427c9890d8d9ce8a7d74b7fee56323521bec4c923")
 
     def test_get_record_by_hash(self):
         cached_func = CachedFunction()
@@ -104,7 +107,8 @@ class CachedFunctionTest(unittest.TestCase):
             return a + b + c
 
         my_function(1, 2, 3)
-        record = cached_func.get_record_by_arg_hash("08934e18c19ac2c1d1fd021bc6e33a522ef6fdadf9ffd082235ab9f09d02c519")
+        record = cached_func.get_record_by_arg_hash(
+            "08934e18c19ac2c1d1fd021bc6e33a522ef6fdadf9ffd082235ab9f09d02c519")
         assert record and record.return_pickle
         assert pickle.loads(record.return_pickle) == 6
         assert record.state == FunctionState.DONE
@@ -126,80 +130,81 @@ class CachedFunctionTest(unittest.TestCase):
         engine = create_engine("sqlite:///:memory:")
 
         @CachedFunction(engine)
-        def f1(x): # type: ignore
+        def f1(x):  # type: ignore
             return x + 1
+        c1: CachedFunction = f1._sqlcache
 
         @CachedFunction(engine)
         def f2(x):
             return x + 2
+        c2: CachedFunction = f2._sqlcache
 
         assert f1(1) == 2
         assert f1(2) == 3
         assert f1(2) == 3
-        assert f2(1) == 3
-        assert f2(1) == 3
-        assert f2(1) == 3
-        assert f2(1) == 3
-        assert f1._sqlcache.cache_misses == 2
-        assert f1._sqlcache.cache_hits == 1
-        assert f1._sqlcache.get_stats().cache_size == 2
-        assert f2._sqlcache.cache_misses == 1
-        assert f2._sqlcache.cache_hits == 3
-        assert f2._sqlcache.get_stats().cache_size == 1
+        for _ in range(4):
+            assert f2(1) == 3
+
+        assert c1.get_stats().misses == 2
+        assert c1.get_stats().hits == 1
+        assert c1.get_stats().cache_size == 2
+        assert c2.get_stats().misses == 1
+        assert c2.get_stats().hits == 3
+        assert c2.get_stats().cache_size == 1
 
         @CachedFunction(engine)
         def f1(x):
             return x + 1
+        c1: CachedFunction = f1._sqlcache
 
         assert f1(1) == 2
         assert f1(2) == 3
         assert f1(3) == 4
         assert f1(3) == 4
-        assert f1._sqlcache.cache_misses == 1
-        assert f1._sqlcache.cache_hits == 3
-        assert f1._sqlcache.get_stats().cache_size == 3
+        assert c1.get_stats().misses == 1
+        assert c1.get_stats().hits == 3
+        assert c1.get_stats().cache_size == 3
 
-        f1._sqlcache.trim_cache()
-        assert f1._sqlcache.get_stats().cache_size == 0
+        c1.trim_cache()
+        assert c1.get_stats().cache_size == 0
         assert f1(1) == 2
         assert f1(5) == 6
         assert f2(1) == 3
-        assert f1._sqlcache.cache_misses == 3 # Note this includes the 1 from previous block
-        assert f1._sqlcache.cache_hits == 3
-        assert f1._sqlcache.get_stats().cache_size == 2
-        assert f2._sqlcache.cache_misses == 1
-        assert f2._sqlcache.cache_hits == 4
-        assert f2._sqlcache.get_stats().cache_size == 1
+        # Note this includes the 1 from previous block
+        assert c1.get_stats().misses == 3
+        assert c1.get_stats().hits == 3
+        assert c1.get_stats().cache_size == 2
+        assert c2.get_stats().misses == 1
+        assert c2.get_stats().hits == 4
+        assert c2.get_stats().cache_size == 1
 
     def test_stats_and_trim(self):
-        
+
         @CachedFunction()
         def f(x):
             time.sleep(0.01)
             if x == 42:
                 raise ValueError("This is a test")
             return x + 1
-        
+
         for i in range(10):
             f(i)
         with self.assertRaises(ValueError):
             f(42)
         f(1)
-        
+
         st = f._sqlcache.get_stats()
         assert st.cache_size == 10
         assert st.cache_running == 0
         assert st.cache_done == 10
         assert st.cache_error == 0
-        assert st.local_hits == 1
-        assert st.local_misses == 11
+        assert st.hits == 1
+        assert st.misses == 11
 
         f._sqlcache.trim_cache(15)
         st = f._sqlcache.get_stats()
         assert st.cache_size == 10
 
-        print(f._sqlcache.get_record_by_args(0).timestamp)
-        print(f._sqlcache.get_record_by_args(1).timestamp)
         f._sqlcache.trim_cache(5)
         st = f._sqlcache.get_stats()
         assert st.cache_size == 5
@@ -211,6 +216,7 @@ class CachedFunctionTest(unittest.TestCase):
         st = f._sqlcache.get_stats()
         assert st.cache_size == 0
         assert st.cache_done == 0
+
 
 if __name__ == "__main__":
     unittest.main()

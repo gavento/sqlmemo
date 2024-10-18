@@ -25,12 +25,12 @@ from .schema import Base, FunctionState, CachedFunctionEntry
 
 @dataclass
 class CachedFunctionStats:
-    local_hits: int
-    local_misses: int
-    cache_size: int
-    cache_done: int
-    cache_running: int
-    cache_error: int
+    hits: int
+    misses: int
+    cache_size: int | None = None
+    cache_done: int | None = None
+    cache_running: int | None = None
+    cache_error: int | None = None
 
 
 class CachedFunction:
@@ -251,24 +251,6 @@ class CachedFunction:
         """Return the database record for the given arguments, if it exists."""
         return self.get_record_by_arg_hash(self.hash_args(*args, **kwargs))
 
-    @property
-    def cache_hits(self) -> int:
-        """
-        Return the number of cache hits.
-
-        Note this is only recorded for this cache instance, not stored in the database.
-        """
-        return self._cache_hits
-
-    @property
-    def cache_misses(self) -> int:
-        """
-        Return the number of cache misses (wrapped function calls).
-
-        Note this is only recorded for this cache instance, not stored in the database.
-        """
-        return self._cache_misses
-
     def get_stats(self) -> CachedFunctionStats:
         """
         Return the cache statistics.
@@ -280,8 +262,8 @@ class CachedFunction:
             q = sa.select(sa.func.count(CachedFunctionEntry.id)
                           ).filter_by(func_name=self._func_name)
             return CachedFunctionStats(
-                local_hits=self.cache_hits,
-                local_misses=self.cache_misses,
+                hits=self._cache_hits,
+                misses=self._cache_misses,
                 cache_size=session.scalars(q).one(),
                 cache_done=session.scalars(
                     q.filter_by(state=FunctionState.DONE)).one(),
@@ -303,7 +285,7 @@ class CachedFunction:
                 ~CachedFunctionEntry.id.in_(q)))
 
     def __repr__(self) -> str:
-        return f"<{self.__class__.__name__} {self._func_name!r} at {self._db_url!r} ({self.cache_hits} hits, {self.cache_misses} misses)>"
+        return f"<{self.__class__.__name__} {self._func_name!r} at {self._db_url!r} ({self._cache_hits} hits, {self._cache_misses} misses)>"
 
     def _utctimestamp(self) -> float:
         """Return the current timestamp in UTC as a float."""
