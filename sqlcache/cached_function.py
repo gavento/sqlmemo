@@ -157,7 +157,10 @@ class CachedFunction:
         """Create DB connection and ensure the tables exist. Assumes self._lock is held."""
         assert self._lock.locked()
         if self._engine is None:
-            self._engine = sa.create_engine(self._db_url)
+            connect_args = {}
+            if self._db_url.startswith("sqlite://"):
+                connect_args["check_same_thread"] = False  # We are using locks to ensure thread-safety here
+            self._engine = sa.create_engine(self._db_url, connect_args=connect_args, poolclass=sa.StaticPool)
         if not self._db_initialized:
             self._db_entry_class.metadata.create_all(self._engine)  # type: ignore
             self._db_initialized = True
@@ -345,6 +348,7 @@ class CachedFunction:
             session.add(entry)
             session.commit()
             entry_id = entry.id
+            session.expunge(entry)
 
         # Run the function
         exc = None
@@ -367,7 +371,7 @@ class CachedFunction:
                     entry.state = FunctionState.ERROR
                 else:
                     # Do not record the exception, forget the function was ever running
-                    session.delete(entry)
+                    session.execute(sa.delete(self._db_entry_class).filter_by(id=entry_id))
                     session.commit()
                     raise exc
             else:
