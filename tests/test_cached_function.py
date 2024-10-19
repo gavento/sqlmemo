@@ -1,13 +1,21 @@
+import math
+import os
+from pathlib import Path
 import pickle
+import shutil
+import threading
 import time
 import unittest
+import pytest
 from unittest.mock import patch
 
 from sqlalchemy import create_engine, text
 from sqlcache.cached_function import CachedFunction, FunctionState
 
 
-class CachedFunctionTest(unittest.TestCase):
+class TestCachedFunction:
+
+    DATA_PATH = Path(__file__).parent / "data"
 
     def _is_hit(self, cached_f, *args, **kwargs):
         return cached_f._sqlcache.get_record(*args, **kwargs) is not None
@@ -49,6 +57,7 @@ class CachedFunctionTest(unittest.TestCase):
         engine = create_engine("sqlite:///:memory:")
         count1 = 0
         count2 = 0
+        count3 = 0
 
         @CachedFunction(engine, table_name="tab0", func_name="fun1")
         def fun1(x, y=3, z=True):
@@ -62,6 +71,12 @@ class CachedFunctionTest(unittest.TestCase):
             count2 += 1
             return x + y + 1
 
+        @CachedFunction(engine, table_name="tab1", func_name="fun1")
+        def fun3(x, y=4, z=True):
+            nonlocal count3
+            count3 += 1
+            return x + y + 2
+
         assert fun1(2, 3) == 5
         assert fun1(3, 3) == 6
         assert count1 == 2
@@ -69,6 +84,10 @@ class CachedFunctionTest(unittest.TestCase):
         assert count2 == 0
         assert fun2(2, 4) == 7
         assert count2 == 1
+        assert fun3(2, 4) == 8
+        assert count1 == 2
+        assert count2 == 1
+        assert count3 == 1
 
     # WIP below: JSON, Pickle, exceptions (store, rerun/reraise), parallel/running, ...
     # FIX: Json columns with None vs 'none'
@@ -78,11 +97,11 @@ class CachedFunctionTest(unittest.TestCase):
         def error_function():
             raise ValueError("Something went wrong")
 
-        with self.assertRaises(ValueError):
+        with pytest.raises(ValueError):
             error_function()
-        with self.assertRaises(ValueError):
+        with pytest.raises(ValueError):
             error_function()
-        self.assertEqual(error_function._sqlcache.get_stats().misses, 2)
+        assert error_function._sqlcache.get_stats().misses == 2
 
     def test_hash_args(self):
         """Tests the stability of the hashes."""
@@ -92,12 +111,9 @@ class CachedFunctionTest(unittest.TestCase):
         def my_function(a, b, c):
             return a + b + c
 
-        self.assertEqual(cached_func.hash_args(
-            1, 2, 3), "08934e18c19ac2c1d1fd021bc6e33a522ef6fdadf9ffd082235ab9f09d02c519")
-        self.assertEqual(cached_func.hash_args(
-            1, 2, c=3), "08934e18c19ac2c1d1fd021bc6e33a522ef6fdadf9ffd082235ab9f09d02c519")
-        self.assertEqual(cached_func.hash_args(
-            2, 3, 4), "24242d2d2a29d91d628442c427c9890d8d9ce8a7d74b7fee56323521bec4c923")
+        assert cached_func.hash_args(1, 2, 3) == "08934e18c19ac2c1d1fd021bc6e33a522ef6fdadf9ffd082235ab9f09d02c519"
+        assert cached_func.hash_args(1, 2, c=3) == "08934e18c19ac2c1d1fd021bc6e33a522ef6fdadf9ffd082235ab9f09d02c519"
+        assert cached_func.hash_args(2, 3, 4) == "24242d2d2a29d91d628442c427c9890d8d9ce8a7d74b7fee56323521bec4c923"
 
     def test_get_record_by_hash(self):
         cached_func = CachedFunction()
@@ -107,8 +123,7 @@ class CachedFunctionTest(unittest.TestCase):
             return a + b + c
 
         my_function(1, 2, 3)
-        record = cached_func.get_record_by_hash(
-            "08934e18c19ac2c1d1fd021bc6e33a522ef6fdadf9ffd082235ab9f09d02c519")
+        record = cached_func.get_record_by_hash("08934e18c19ac2c1d1fd021bc6e33a522ef6fdadf9ffd082235ab9f09d02c519")
         assert record and record.value_pickle
         assert pickle.loads(record.value_pickle) == 6
         assert record.state == FunctionState.DONE
@@ -132,11 +147,13 @@ class CachedFunctionTest(unittest.TestCase):
         @CachedFunction(engine)
         def f1(x):  # type: ignore
             return x + 1
+
         c1: CachedFunction = f1._sqlcache
 
         @CachedFunction(engine)
         def f2(x):
             return x + 2
+
         c2: CachedFunction = f2._sqlcache
 
         assert f1(1) == 2
@@ -155,6 +172,7 @@ class CachedFunctionTest(unittest.TestCase):
         @CachedFunction(engine)
         def f1(x):
             return x + 1
+
         c1: CachedFunction = f1._sqlcache
 
         assert f1(1) == 2
@@ -189,7 +207,7 @@ class CachedFunctionTest(unittest.TestCase):
 
         for i in range(10):
             f(i)
-        with self.assertRaises(ValueError):
+        with pytest.raises(ValueError):
             f(42)
         f(1)
 
@@ -217,9 +235,108 @@ class CachedFunctionTest(unittest.TestCase):
         assert st.cache_size == 0
         assert st.cache_done == 0
 
-# TODO: add test on: parallel calls (same and different args), exception re-raising,
-# db file stability (add testing DB, read it back), storing args as JSON and Pickle including using mapping to wacky objects,
-# dill for pickling complex objects, ...
+    def test_parallel_calls(self, tmp_path):
+        # @CachedFunction(f"sqlite:///{tmp_path}/tst.sqlite")
+        @CachedFunction()
+        def slow_function(x):
+            time.sleep(0.1)
+            return x * 2
+
+        def run_function(x):
+            return slow_function(x)
+
+        # Test parallel calls with same argument
+        threads = [threading.Thread(target=run_function, args=(0,)) for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        stats = slow_function._sqlcache.get_stats()
+        assert stats.cache_size == 1
+
+        # Test parallel calls with different arguments
+        threads = [threading.Thread(target=run_function, args=(i,)) for i in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        stats = slow_function._sqlcache.get_stats()
+        assert stats.cache_size == 5
+
+    def test_parallel_trim(self, tmp_path):
+        # @CachedFunction(f"sqlite:///{tmp_path}/tst.sqlite")
+        cache = CachedFunction()
+
+        @cache
+        def slow_function(x):
+            time.sleep(0.01)
+            if x == 1:
+                cache.trim_cache()
+            time.sleep(0.05)
+            return x * 2
+
+        threads = [threading.Thread(target=slow_function, args=(i,)) for i in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert cache.get_stats().cache_size == 5
+
+    def test_exception_reraising(self):
+        @CachedFunction(record_exceptions=True, reraise_exceptions=True)
+        def error_function(x):
+            if x == 0:
+                raise ValueError("Cannot divide by zero")
+            return 10 / x
+
+        try:
+            error_function(0)
+        except ValueError:
+            pass  # Expected exception
+
+        stats = error_function._sqlcache.get_stats()
+        assert stats.misses == 1
+        assert stats.cache_error == 1
+
+        try:
+            error_function(0)
+        except ValueError:
+            pass  # Expected exception
+
+        stats = error_function._sqlcache.get_stats()
+        assert stats.misses == 1
+        assert stats.hits == 1
+        assert stats.cache_error == 1
+
+    def test_json_pickle_storage(self):
+        @CachedFunction(args_json=True, args_pickle=True, value_json=True)
+        def complex_function(x, y):
+            return {"result": x + y, "factors": [x, y]}
+
+        result = complex_function(3, 4)
+        assert result == {"result": 7, "factors": [3, 4]}
+        cache_entry = complex_function._sqlcache.get_record(3, 4)
+
+        assert cache_entry.args_json == {"x": 3, "y": 4}
+        assert cache_entry.value_json == result
+        assert pickle.loads(cache_entry.args_pickle) == {"x": 3, "y": 4}
+        assert pickle.loads(cache_entry.value_pickle) == result
+
+    def test_dill_serialization(self):
+        @CachedFunction(use_dill=True)
+        def lambda_function(x):
+            return (lambda a: a * 2)(x)
+
+        result = lambda_function(5)
+        assert result == 10
+
+        cache_entry = lambda_function._sqlcache.get_record(5)
+        assert cache_entry is not None
+        assert pickle.loads(cache_entry.value_pickle) == 10
+
 
 if __name__ == "__main__":
     unittest.main()
