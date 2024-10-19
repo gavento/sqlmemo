@@ -1,4 +1,5 @@
 import dataclasses
+import enum
 import hashlib
 from typing import Any
 
@@ -23,6 +24,9 @@ def _hash_helper(obj: Any, hash, sort_keys: bool):
         for field in dataclasses.fields(obj):
             _hash_helper(field.name, hash, sort_keys=sort_keys)
             _hash_helper(getattr(obj, field.name), hash, sort_keys=sort_keys)
+    elif isinstance(obj, enum.Enum):
+        _hash_helper(obj.__class__.__name__, hash, sort_keys=sort_keys)
+        _hash_helper(obj.value, hash, sort_keys=sort_keys)
     else:
         raise TypeError(f"Unsupported type in hash_obj: {type(obj)}")
 
@@ -41,28 +45,20 @@ def hash_obj(obj: Any, sort_keys: bool = True, hash_factory=hashlib.sha256) -> s
     return hash.hexdigest()
 
 
-def jsonize(obj: Any) -> str:
-    """Converts an object to a JSON-compatible object, with dataclasses converted to dicts.
-    
-    """
+def jsonize(obj: Any) -> Any:
+    """Converts an object to a JSON-compatible object, with dataclasses converted to dicts."""
     if isinstance(obj, (int, bool, str, float, type(None))):
         return obj
     elif isinstance(obj, (list, tuple)):
         return [jsonize(item) for item in obj]
     elif isinstance(obj, (set, frozenset)):
-        return [jsonize(item) for item in obj] #NB: The ordering is arbitrary
+        return [jsonize(item) for item in obj]  # NB: The ordering is arbitrary
     elif isinstance(obj, dict):
         for k in obj.keys():
             if not isinstance(k, str):
-                raise TypeError(
-                    f"Dictionary keys must be strings to be JSON-compatible, found: {type(k)}"
-                )
+                raise TypeError(f"Dictionary keys must be strings to be JSON-compatible, found: {type(k)}")
         return {k: jsonize(v) for k, v in obj.items()}
     elif dataclasses.is_dataclass(obj):
-        return {
-            field.name: jsonize(getattr(obj, field.name))
-            for field in dataclasses.fields(obj)
-        }
+        return {field.name: jsonize(getattr(obj, field.name)) for field in dataclasses.fields(obj)}
     else:
         raise TypeError(f"Unsupported type in jsonize: {type(obj)}")
-
