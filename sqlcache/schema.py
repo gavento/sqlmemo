@@ -1,6 +1,5 @@
-import datetime
 import enum
-from typing import Any, Optional
+from typing import Any, Optional, Type, TypeVar
 
 from sqlalchemy import (
     JSON,
@@ -9,7 +8,7 @@ from sqlalchemy import (
     LargeBinary,
     Text,
 )
-from sqlalchemy.orm import DeclarativeBase, mapped_column, Mapped
+from sqlalchemy.orm import DeclarativeBase, mapped_column, Mapped, declarative_base
 
 
 class FunctionState(enum.Enum):
@@ -18,18 +17,11 @@ class FunctionState(enum.Enum):
     ERROR = "ERROR"
 
 
-class Base(DeclarativeBase):
-    type_annotation_map = {
-        datetime.datetime: TIMESTAMP(timezone=True),
-        bytes: LargeBinary,
-    }
-
-
-class CachedFunctionEntry(Base):
-    __tablename__ = 'cached_function'
+class CachedFunctionEntry:
+    __abstract__ = True
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    timestamp: Mapped[float] # Unix UTC timestamp
+    timestamp: Mapped[float]  # Unix UTC timestamp
     func_name: Mapped[str]
     args_hash: Mapped[str]
     state: Mapped[FunctionState]
@@ -43,10 +35,21 @@ class CachedFunctionEntry(Base):
     exception_pickle: Mapped[Optional[bytes]]
     exception_str: Mapped[Optional[Any]] = mapped_column(Text, nullable=True)
 
-    __table_args__ = (
-        Index('ix_cached_function_func_name_args_hash',
-              'func_name', 'args_hash', unique=True),
-        Index('ix_cached_function_func_name_state_timestamp',
-              'func_name', 'state', 'timestamp'),
-    )
 
+def cached_function_entry_class(table_name) -> Type[CachedFunctionEntry]:
+
+    ## NB: We want to have separate metadata for each table, so we can't use the default DeclarativeBase
+    class Base(DeclarativeBase):
+        type_annotation_map = {
+            bytes: LargeBinary,
+        }
+
+    class ConcreteCachedFunctionEntry(Base, CachedFunctionEntry):
+        __abstract__ = False
+        __tablename__ = table_name
+        __table_args__ = (
+            Index(f"ix__{table_name}__func_name__args_hash", "func_name", "args_hash", unique=True),
+            Index(f"ix__{table_name}__func_name__state__timestamp", "func_name", "state", "timestamp"),
+        )
+
+    return ConcreteCachedFunctionEntry

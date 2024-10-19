@@ -11,6 +11,7 @@ import socket
 import threading
 from contextlib import contextmanager
 from typing import Any, Callable, Generator, Iterable, Optional, Type
+import typing
 import warnings
 
 from pytest import Session
@@ -20,7 +21,7 @@ from sqlalchemy.orm import Session
 import dill
 
 from . import serialize
-from .schema import Base, FunctionState, CachedFunctionEntry
+from .schema import CachedFunctionEntry, FunctionState, cached_function_entry_class
 
 
 @dataclass
@@ -36,8 +37,8 @@ class CachedFunctionStats:
 class CachedFunction:
 
     DEFAULT_DB_URL = "sqlite:///:memory:"
-    DEFAULT_TABLE_NAME_PREFIX = "cache_"
-    FUNCTION_CACHE_KEY = "_sqlcache"
+    DEFAULT_TABLE_NAME = "cached_function_data"
+    CACHE_ATTRIBUTE_NAME = "_sqlcache"
 
     def __init__(
         self,
@@ -96,7 +97,6 @@ class CachedFunction:
                 f"Expected Engine or str as `db`, got {type(db)}. Hint: use `@CachedFunction()` instead of `@CachedFunction`")
 
         self._func_name = func_name
-        self._table_name = table_name
         self._func = None
         self._func_sig = None
         if func is not None:
@@ -118,6 +118,10 @@ class CachedFunction:
         self._db_initialized = False
         self._use_dill = use_dill
         self._store_default_args = store_default_args
+        if table_name is None:
+            table_name = self.DEFAULT_TABLE_NAME
+        self._table_name = table_name
+        self._db_entry_class = cached_function_entry_class(self._table_name)
 
         self._cache_hits = 0
         self._cache_misses = 0
@@ -129,6 +133,7 @@ class CachedFunction:
             self._db_url = str(db.url)  # Only as informative at this point
         else:
             self._db_url = db
+            self._engine = None
 
     def _set_func(self, func: Callable):
         """Set the wrapped function during or after __init__ (for use as a decorator)"""
@@ -137,9 +142,6 @@ class CachedFunction:
         self._func_sig = inspect.signature(self._func)
         if self._func_name is None:
             self._func_name = self._func.__qualname__
-        if self._table_name is None:
-            self._table_name = f"{
-                self.DEFAULT_TABLE_NAME_PREFIX}{self._func_name}"
 
     @contextmanager
     def _get_locked_session(self) -> Generator[Session, None, None]:
@@ -157,7 +159,7 @@ class CachedFunction:
         if self._engine is None:
             self._engine = sa.create_engine(self._db_url)
         if not self._db_initialized:
-            Base.metadata.create_all(self._engine)
+            self._db_entry_class.metadata.create_all(self._engine)  # type: ignore
             self._db_initialized = True
 
     def add_index(self, *column_expressions: str, index_name: str | None = None):
@@ -243,7 +245,7 @@ class CachedFunction:
     def get_record_by_hash(self, args_hash: str) -> CachedFunctionEntry | None:
         """Return the database record for the given hash, if it exists."""
         with self._get_locked_session() as session:
-            return session.scalars(sa.select(CachedFunctionEntry).filter_by(
+            return session.scalars(sa.select(self._db_entry_class).filter_by(
                 func_name=self._func_name, args_hash=args_hash)).one_or_none()
 
     def get_record(self, *args, **kwargs) -> CachedFunctionEntry | None:
@@ -258,7 +260,7 @@ class CachedFunction:
         """
         with self._get_locked_session() as session:
             # Count ids where func_name matches
-            q = sa.select(sa.func.count(CachedFunctionEntry.id)
+            q = sa.select(sa.func.count(self._db_entry_class.id)
                           ).filter_by(func_name=self._func_name)
             return CachedFunctionStats(
                 hits=self._cache_hits,
@@ -278,10 +280,10 @@ class CachedFunction:
         """
         with self._get_locked_session() as session:
             # Delete all rows where func_name matches, ordered by timestamp, except the max_records latest
-            q = sa.select(CachedFunctionEntry.id).filter_by(func_name=self._func_name).order_by(
-                CachedFunctionEntry.timestamp.desc()).limit(max_records)
-            session.execute(sa.delete(CachedFunctionEntry).filter_by(func_name=self._func_name).where(
-                ~CachedFunctionEntry.id.in_(q)))
+            q = sa.select(self._db_entry_class.id).filter_by(func_name=self._func_name).order_by(
+                self._db_entry_class.timestamp.desc()).limit(max_records)
+            session.execute(sa.delete(self._db_entry_class).filter_by(func_name=self._func_name).where(
+                ~self._db_entry_class.id.in_(q)))
 
     def __repr__(self) -> str:
         return f"<{self.__class__.__name__} {self._func_name!r} at {self._db_url!r} ({self._cache_hits} hits, {self._cache_misses} misses)>"
@@ -298,7 +300,7 @@ class CachedFunction:
 
         with self._get_locked_session() as session:  # Transaction
             # Check for existing result
-            entry = session.scalars(sa.select(CachedFunctionEntry).filter_by(
+            entry = session.scalars(sa.select(self._db_entry_class).filter_by(
                 func_name=self._func_name, args_hash=args_hash)).one_or_none()
 
             if entry is not None:
@@ -329,7 +331,7 @@ class CachedFunction:
                         # Otherwise just re-run the computation below
             else:
                 # Record as running
-                entry = CachedFunctionEntry(
+                entry = typing.cast(Any, self._db_entry_class)(
                     func_name=self._func_name,
                     args_hash=args_hash,
                     args_json=self._encode_args_helper(
@@ -354,13 +356,9 @@ class CachedFunction:
 
         # Record the result
         with self._get_locked_session() as session:  # Transaction
-            updated_entry = session.get(CachedFunctionEntry, entry_id)
-            if updated_entry is not None:
-                entry = updated_entry
-            else:
-                pass
-                # raise RuntimeError(f"Record for an already running {self._func_name} missing in the database (expected ID: {entry_id})")
-
+            # Note we do NOT re-read the entry from the database, we reuse the one from the transaction above
+            # The entry may have been deleted in the meantime (handled by merge below) or updated by
+            # another run of the same function and args (should be overwritten)
             entry.runtime_seconds = self._utctimestamp() - entry.timestamp
             if exc is not None:
                 if self._exception_check_helper(exc, self._record_exceptions):
@@ -379,7 +377,7 @@ class CachedFunction:
                     value, self._value_json, _json=True)
                 entry.value_pickle = self._encode_value_helper(
                     value, True, _pickle=True)
-            session.add(entry)
+            session.merge(entry)
             session.commit()
 
         if exc is not None:
@@ -406,7 +404,7 @@ class CachedFunction:
             async def awrapper(*args, **kwargs):
                 return await self._call_func_async(*args, **kwargs)
 
-            awrapper.__setattr__(self.FUNCTION_CACHE_KEY, self)
+            awrapper.__setattr__(self.CACHE_ATTRIBUTE_NAME, self)
             return awrapper
         else:
 
@@ -414,5 +412,5 @@ class CachedFunction:
             def wrapper(*args, **kwargs):
                 return self._call_func_sync(*args, **kwargs)
 
-            wrapper.__setattr__(self.FUNCTION_CACHE_KEY, self)
+            wrapper.__setattr__(self.CACHE_ATTRIBUTE_NAME, self)
             return wrapper
