@@ -10,7 +10,7 @@ import pytest
 from unittest.mock import patch
 
 from sqlalchemy import create_engine, text
-from sqlcache.memoize import Memoize, RecordState
+from sqlmemo.memoize import Memoize, RecordState
 
 
 class TestCachedFunction:

@@ -5,19 +5,20 @@ description = ""
 authors = ["Tomas Gavenciak <gavento@gmail.com>"]
 readme = "README.md"
 
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
 [tool.poetry.dependencies]
 python = "^3.10"
 sqlalchemy = "^2.0.30"
-canonicaljson = "^2.0.0"
-dill = "^0.3.9"
+dill = { version = "^0.3.9", optional = true }
 
 [tool.poetry.group.dev.dependencies]
 black = "^24.4.2"
 pytest = "^8.3.2"
-
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+isort = "^5.13.2"
+pre-commit = "^4.0.1"
 
 [tool.black]
 line-length = 120

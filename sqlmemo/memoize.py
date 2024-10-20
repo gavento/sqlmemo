@@ -18,7 +18,6 @@ from pytest import Session
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
-import dill
 
 from . import serialize
 from .schema import MemoizeRecord, RecordState, concrete_memoize_record
@@ -117,6 +116,11 @@ class Memoize:
         self._db_url: str
         self._db_initialized = False
         self._use_dill = use_dill
+        if self._use_dill:
+            try:
+                import dill
+            except ImportError:
+                raise ImportError("dill is required with use_dill=True, but not installed")
         self._store_default_args = store_default_args
         if table_name is None:
             table_name = self.DEFAULT_TABLE_NAME
@@ -199,6 +203,7 @@ class Memoize:
     def _dumps(self, obj: Any) -> bytes:
         """Pickle the object, using dill if enabled."""
         if self._use_dill:
+            import dill
             return dill.dumps(obj)
         else:
             return pickle.dumps(obj)
@@ -206,6 +211,7 @@ class Memoize:
     def _loads(self, data: bytes) -> Any:
         """Unpickle the object, using dill if enabled."""
         if self._use_dill:
+            import dill
             return dill.loads(data)
         else:
             return pickle.loads(data)

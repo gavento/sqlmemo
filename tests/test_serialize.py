@@ -1,7 +1,7 @@
 import dataclasses
 import math
 import unittest
-from sqlcache.serialize import hash_obj, jsonize
+from sqlmemo.serialize import hash_obj, jsonize
 
 
 @dataclasses.dataclass

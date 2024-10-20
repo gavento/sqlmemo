@@ -2,7 +2,7 @@ from pathlib import Path
 import pytest
 
 from sqlalchemy import create_engine
-from sqlcache.memoize import Memoize, RecordState
+from sqlmemo.memoize import Memoize, RecordState
 
 
 def create_test_data_plain(path: Path):
