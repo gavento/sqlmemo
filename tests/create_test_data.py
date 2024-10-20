@@ -1,54 +1,58 @@
+from collections import namedtuple
+import hashlib
 from pathlib import Path
 import pytest
 
-from sqlalchemy import create_engine
-from sqlmemo.memoize import Memoize, RecordState
+from sqlmemo.sqlmemo import SQLMemo, SQLMemoState
 
 
 def create_test_data_plain(path: Path):
-    """This helper creates a new database file and tests that the cache works. Kept for reference only, should not be called by tests!"""
-    engine = create_engine(f"sqlite:///{path}")
+    """This helper creates a new database file and tests that the cache works."""
 
-    g = None
-
-    @Memoize(
-        engine, record_exceptions=True, reraise_exceptions=True, args_pickle=True, func_name="f", table_name="foo_bar"
+    @SQLMemo(
+        path,
+        record_exceptions=True,
+        store_args_pickle=True,
+        func_name="f",
+        table_name="foo_bar",
+        hash_factory=hashlib.sha3_512,
     )
     def f(x, *args, y=42, z=None, **kwargs):
         if x == "err":
             raise ValueError("This is a test")
         nonlocal g
-        return dict(x=x, args=args, kwargs=kwargs, g=g)
+        return (x, y, z, args, kwargs, g)
 
-    f(1)
+    g = None
     f(1)
     f(1, z="x", q=b"hello\0")
     f(1, 2, 3, foo="bar")
     g = {1, 2, 3, 4}
-    f(1.3, float("nan"), float("inf"), z=frozenset({1, 2, 4}), w=RecordState.ERROR)
+    f(1.3, float("nan"), float("inf"), z=frozenset({1, 2, 4}), w=SQLMemoState.ERROR)
     with pytest.raises(ValueError):
         f("err")
 
-    stats = f._sqlcache.get_stats()
-    assert stats.misses == 5
-    assert stats.cache_error == 1
-    assert stats.cache_size == 5
+    assert f._sqlmemo.stats.misses == 5
+    assert f._sqlmemo.stats.errors == 1
+    assert f._sqlmemo.get_db_stats().records == 5
 
 
 def create_test_data_dill(path: Path):
-    """This helper creates a new database file and tests that the cache works. Kept for reference only, should not be called by tests!"""
-    engine = create_engine(f"sqlite:///{path}")
+    """This helper creates a new database file and tests that the cache works."""
 
-    g = None
-
-    @Memoize(
-        engine, record_exceptions=True, reraise_exceptions=True, args_pickle=True, func_name="f", use_dill=True
+    @SQLMemo(
+        path,
+        record_exceptions=True,
+        store_args_pickle=True,
+        func_name="f",
+        use_dill=True,
+        apply_default_args=False,
     )
     def f(x, *args, y=42, z=None, **kwargs):
         if x == "err":
             raise ValueError("This is a test")
         nonlocal g
-        return dict(x=x, args=args, kwargs=kwargs, g=g)
+        return (x, y, z, args, kwargs, g)
 
     class Foo:
         def __init__(self, x):
@@ -57,58 +61,61 @@ def create_test_data_dill(path: Path):
         def foo(self):
             return self.x * 3
 
+    XY = namedtuple("XY", ["x", "y"])
+
     g = b"hello\1"
     f(1)
     g = None
-    f(1)
+    f(1)  # NB: This is not stored
     g = lambda x: x * 2
     f(1, z="x", q=b"hello\0")
     g = Foo(1)
     f(1, 2, 3, foo="bar")
     g = Foo(2).foo
-    f(1.3, float("nan"), float("inf"), z=frozenset({1, 2, 4}), w=RecordState.ERROR)
+    f(1.3, float("nan"), float("inf"), z=frozenset({1, 2, 4}), w=SQLMemoState.ERROR)
     with pytest.raises(ValueError):
         f("err")
+    g = XY
+    f(XY(1, 2))
 
-    stats = f._sqlcache.get_stats()
-    assert stats.misses == 5
-    assert stats.cache_error == 1
-    assert stats.cache_size == 5
+    assert f._sqlmemo.stats.hits == 1
+    assert f._sqlmemo.stats.misses == 6
+    assert f._sqlmemo.stats.errors == 1
+    assert f._sqlmemo.get_db_stats().records == 6
 
 
 def create_test_data_json(path: Path):
-    """This helper creates a new database file and tests that the cache works. Kept for reference only, should not be called by tests!"""
-    engine = create_engine(f"sqlite:///{path}")
-    g = None
+    """This helper creates a new database file and tests that the cache works."""
 
-    @Memoize(
-        engine,
+    @SQLMemo(
+        path,
         record_exceptions=True,
-        reraise_exceptions=True,
-        args_pickle=True,
+        store_args_pickle=True,
         func_name="f",
-        args_json=True,
-        value_json=True,
+        store_args_json=True,
+        store_value_json=True,
     )
     def f(x, *args, y=42, z=None, **kwargs):
         if x == "err":
             raise ValueError("This is a test")
         nonlocal g
-        return dict(x=x, args=args, kwargs=kwargs, g=g)
+        return (x, y, z, args, kwargs, g)
 
+    g = None
     f(1)
-    f(1)
+    g = 1
+    f(1)  # NB: This is not stored
     g = {1, 2, 3}
     f(1, z="x", q=frozenset({1, 2, 3}))
     g = dict(a=1, b=True, c=None, d=1.0)
     f(1, 2, 3, foo="bar")
     with pytest.raises(ValueError):
+        g = lambda x: x * 2  # This is not even tried to be serialized to JSON
         f("err")
 
-    stats = f._sqlcache.get_stats()
-    assert stats.misses == 4
-    assert stats.cache_error == 1
-    assert stats.cache_size == 4
+    assert f._sqlmemo.stats.misses == 4
+    assert f._sqlmemo.stats.errors == 1
+    assert f._sqlmemo.get_db_stats().records == 4
 
 
 if __name__ == "__main__":

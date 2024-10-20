@@ -67,7 +67,7 @@ class SQLMemo:
         reraise_exceptions: bool | Iterable[Type] | Callable[[Exception], bool] = False,
         hash_factory: Callable = hashlib.sha256,
         use_dill: bool = False,
-        store_default_args: bool = False,
+        apply_default_args: bool = True,
     ):
         """
         Initializes a Memoize object.
@@ -87,9 +87,9 @@ class SQLMemo:
         - use_dill (bool): Whether to use dill instead of pickle for serialization.
           Dill can serialize more types (lambdas, local classes, etc.) but is slower and complex objects
           serialization may be less stable across code changes and python versions.
-        - store_default_args (bool): Whether to store default arguments in the cache (off by default).
-          This is useful if you change the default arguments of the function and want to distinguish between calls with different defaults.
-          Having it off allows e.g. adding new default arguments without invalidating existing cache records.
+        - apply_default_args (bool): Whether to apply default arguments to the function call before hashing and storage (on by default).
+          This is the mode refensive setting (e.g. sensitive to changing argument defaults or adding new arguments).
+          It does allow e.g. for adding a default value to an argument where it was already called with the default.
 
         The `args_*` and `value_json` parameters can be set to True or False to enable or disable the respective feature, or to a callable to transform the
         value before storing it. This is useful if you e.g. want to extract only some arguments or their features to be stored in the cache (e.g. as JSON).
@@ -116,7 +116,7 @@ class SQLMemo:
         self._hash_factory = hash_factory
         self._record_exceptions = record_exceptions
         self._reraise_exceptions = reraise_exceptions
-        self._store_default_args = store_default_args
+        self._apply_default_args = apply_default_args
         self._use_dill = use_dill
         if self._use_dill:
             try:
@@ -227,17 +227,22 @@ class SQLMemo:
         else:
             return pickle.loads(data)
 
-    def _args_to_dict(self, args: tuple[Any], kwargs: dict[str, Any]) -> tuple[inspect.BoundArguments, dict[str, Any]]:
+    def _args_to_dict(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple[inspect.BoundArguments, dict[str, Any]]:
         """
         Create a single dict with all named arguments, optionally with default values applied.
-        The extra keyword and positional arguments are preserved, named as in the function signature
-        (usually `*args` and `**kwargs`).
+        The extra positional arguments are preserved, named as in the function signature (usually `args` for `*args`).
+        Kwargs are added into the returned dictionary. Returns a tuple of the BoundArguments and the dictionary.
         """
         assert self._func_sig is not None
         bound_args = self._func_sig.bind(*args, **kwargs)
-        if self._store_default_args:
+        if self._apply_default_args:
             bound_args.apply_defaults()
-        return bound_args, dict(bound_args.arguments)
+        d = dict(bound_args.arguments)
+        kwargs_name = next((p.name for p in self._func_sig.parameters.values() if p.kind == inspect.Parameter.VAR_KEYWORD), None)
+        if kwargs_name is not None and kwargs_name in d:
+            kw = d.pop(kwargs_name)
+            d.update(kw)
+        return bound_args, d
 
     def _encode_value_helper(
         self, value: Any, param: bool | Callable, _json: bool = False, _pickle: bool = False

@@ -24,7 +24,7 @@ class TestCachedFunction:
         count = 0
 
         # Define a function to be cached
-        @SQLMemo(store_default_args=True)
+        @SQLMemo(apply_default_args=True)
         def expensive_function(x, y=3, z=True):
             nonlocal count
             count += 1
@@ -393,7 +393,7 @@ class TestCachedFunction:
         result = f(1, z="x", q=b"hello\0")
         assert result["x"] == 1
         assert result["args"] == ()
-        assert result["kwargs"] == {"z": "x", "q": b"hello\0"}
+        assert result["kwargs"] == {"q": b"hello\0"}
         assert callable(result["g"])  # lambda function
         assert result["g"](3) == 6
 
@@ -408,12 +408,14 @@ class TestCachedFunction:
         assert result["x"] == 1.3
         assert math.isnan(result["args"][0])
         assert math.isinf(result["args"][1])
-        assert result["kwargs"] == {"z": frozenset({1, 2, 4}), "w": SQLMemoState.ERROR}
+        assert result["kwargs"] == {"w": SQLMemoState.ERROR}
         assert callable(result["g"])
         assert result["g"]() == 6  # Foo(2).foo()
 
         with pytest.raises(ValueError):
             f("err")
+        with pytest.raises(NotImplementedError):
+            f("absent")
 
     def test_read_db_file_json(self, tmp_path):
         db_src = self.DATA_PATH / "test_data_json.sqlite"
@@ -428,13 +430,104 @@ class TestCachedFunction:
         assert stats.records_error == 1
         assert stats.records == 4
 
-        assert f(1) == dict(x=1, args=(), kwargs={})
-        assert f(1, z="x", q=(1, 2, 3)) == dict(x=1, args=(), kwargs={"z": "x", "q": (1, 2, 3)})
-        assert f(1, 2, 3, foo="bar") == dict(x=1, args=(2, 3), kwargs={"foo": "bar"})
+        assert f(1) == dict(x=1, args=(), kwargs={}, g=None)
+        assert f(1, z="x", q=frozenset({1, 2, 3})) == dict(x=1, args=(), kwargs={"q": frozenset({1, 2, 3})}, g={1, 2, 3})
+        assert f(1, 2, 3, foo="bar") == dict(x=1, args=(2, 3), kwargs={"foo": "bar"}, g=dict(a=1, b=True, c=None, d=1.0))
+
+        # Test the JSON arguments are correctly stored
+        r = f._sqlmemo.get_record(1, z="x", q=frozenset({1, 2, 3}))
+        assert r is not None
+        assert r.args_json == {"x": 1, "z": "x", "q": [1, 2, 3]}
+        assert r.value_json == dict(x=1, args=[], kwargs={"z": "x", "q": [1, 2, 3]})
+
+        r = f._sqlmemo.get_record(1, 2, 3, foo="bar")
+        assert r is not None
+        assert r.args_json == {"x": 1, "args": [2, 3], "foo": "bar"}
+        assert r.value_json == dict(x=1, args=[2, 3], kwargs={"foo": "bar"}, g=dict(a=1, b=True, c=None, d=1.0))
 
         with pytest.raises(ValueError):
             f("err")
+        with pytest.raises(NotImplementedError):
+            f("absent")
 
+    def test_args_equivalence(self):
+        engine = create_engine("sqlite:///:memory:")
+        @SQLMemo(engine, func_name="f")
+        def f1(x, *args):
+            return x * sum(args)
+
+        assert f1(2, 3, 4) == 14
+        assert f1(2, 3, 4, 5) == 24
+
+        @SQLMemo(engine, func_name="f", apply_default_args=False)
+        def f2(x, *args, y=0):
+            raise NotImplementedError("Should not be called")
+
+        assert f2(2, 3, 4) == 14
+        assert f2(2, 3, 4, 5) == 24
+
+        @SQLMemo(engine, func_name="f", apply_default_args=False)
+        def f3(x, *args, z=None, **kwargs):
+            raise NotImplementedError("Should not be called")
+
+        assert f3(2, 3, 4) == 14
+        assert f3(2, 3, 4, 5) == 24
+
+        @SQLMemo(engine, func_name="f", apply_default_args=True)
+        def f4(*args, x=2):
+            raise NotImplementedError("Should not be called")
+
+        assert f4(3, 4) == 14
+        assert f4(3, 4, x=2) == 14
+        assert f4(3, 4, 5) == 24
+        with pytest.raises(NotImplementedError):
+            f4(3, 4, x=0)
+
+    def test_kwargs_equivalence(self):
+        engine = create_engine("sqlite:///:memory:")
+        @SQLMemo(engine, func_name="f")
+        def f1(x, **kwargs):
+            return f"{x} {' '.join(sorted(kwargs))} {sum(kwargs.values())}"
+
+        assert f1(1, a=0) == "1 a 0"
+        assert f1(1, a=2, b=3) == "1 a b 5"
+        assert f1(1, b=3, a=2) == "1 a b 5"
+        assert f1._sqlmemo.stats.hits == 1
+        assert f1._sqlmemo.stats.misses == 2
+
+        @SQLMemo(engine, func_name="f", apply_default_args=False)
+        def f2(x, a=0, **kwargs):
+            raise NotImplementedError("Should not be called")
+
+        assert f2(1, 0) == "1 a 0"
+        assert f2(1, b=3, a=2) == "1 a b 5"
+        assert f2(1, 2, b=3) == "1 a b 5"
+        with pytest.raises(NotImplementedError):
+            f2(1)
+
+        @SQLMemo(engine, func_name="f", apply_default_args=True)
+        def f2b(x, a=0, **kwargs):
+            raise NotImplementedError("Should not be called")
+        assert f2b(1, 0) == "1 a 0"
+        assert f2b(1) == "1 a 0"
+        assert f2b(1, 2, b=3) == "1 a b 5"
+
+        @SQLMemo(engine, func_name="f", apply_default_args=False)
+        def f3(a, x, b=0):
+            raise NotImplementedError("Should not be called")
+
+        assert f3(0, 1) == "1 a 0"
+        assert f3(2, 1, 3) == "1 a b 5"
+        assert f3(x=1, a=2, b=3) == "1 a b 5"
+
+        @SQLMemo(engine, func_name="f", apply_default_args=True)
+        def f3b(a, x=1, b=3):
+            raise NotImplementedError("Should not be called")
+        assert f3b(2, x=1) == "1 a b 5"
+        assert f3b(2, 1, 3) == "1 a b 5"
+        assert f3b(2) == "1 a b 5"
+        with pytest.raises(NotImplementedError):
+            f3b(0)
 
 # TODO: Add tests for argument filtering (json, pickle), value filtering (json), and exception filtering (in recording and reraising)
 
