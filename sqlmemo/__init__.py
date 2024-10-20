@@ -1,1 +1,1 @@
-from .memoize import Memoize
+from .sqlmemo import SQLMemo
