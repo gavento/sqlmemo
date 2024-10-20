@@ -110,9 +110,9 @@ class SQLMemo:
 
         # General settings
         self._func_name = func_name
-        self._args_pickle = store_args_pickle
-        self._args_json = store_args_json
-        self._value_json = store_value_json
+        self._store_args_pickle = store_args_pickle
+        self._store_args_json = store_args_json
+        self._store_value_json = store_value_json
         self._hash_factory = hash_factory
         self._record_exceptions = record_exceptions
         self._reraise_exceptions = reraise_exceptions
@@ -252,12 +252,20 @@ class SQLMemo:
             value = self._dumps(value)
         return value
 
-    def _encode_args_helper(self, args: inspect.BoundArguments, param: bool | Callable, **kwargs) -> Any:
+    def _encode_args_helper(
+        self, args: inspect.BoundArguments, param: bool | Callable | Iterable[str], **kwargs
+    ) -> Any:
         if param is False:
             return None
-        return self._encode_value_helper(
-            args, lambda args: param(*args.args, **args.kwargs) if callable(param) else dict(args.arguments), **kwargs
-        )
+        elif param is True:
+            val = dict(args.arguments)
+        elif isinstance(param, Iterable):
+            val = {k: args.arguments[k] for k in param}
+        elif callable(param):
+            val = param(*args.args, **args.kwargs)
+        else:
+            raise TypeError(f"Invalid param type: {param!r}")
+        return self._encode_value_helper(val, param=True, **kwargs)
 
     def _exception_check_helper(
         self, exception: Exception, param: bool | Iterable[Type] | Callable[[Exception], bool]
@@ -343,6 +351,23 @@ class SQLMemo:
         """Return the current timestamp in UTC as a float."""
         return datetime.datetime.now(datetime.timezone.utc).timestamp()
 
+    def _new_or_update_record(
+        self, record: SQLMemoRecord | None, args_hash: str, bound_args: inspect.BoundArguments, state: SQLMemoState
+    ) -> SQLMemoRecord:
+        """Create a new entry for the given arguments."""
+        if record is None:
+            record = cast(SQLMemoRecord, self._db_entry_class())
+        assert self._func_name is not None
+        record.func_name = self._func_name
+        record.args_hash = args_hash
+        record.args_json = self._encode_args_helper(bound_args, self._store_args_json, _json=True)
+        record.args_pickle = self._encode_args_helper(bound_args, self._store_args_pickle, _pickle=True)
+        record.user = getpass.getuser()
+        record.hostname = socket.gethostname()
+        record.timestamp = self._utctimestamp()
+        record.state = state
+        return record
+
     def _call_wrapper(self, *args, **kwargs):
         """The decorated function call, with caching and exception handling."""
         assert self._func is not None
@@ -351,9 +376,9 @@ class SQLMemo:
 
         # Part 1: Check the cache for existing result
         with self._get_locked_session() as session:
-            entry = session.scalars(
+            entry = session.execute(
                 sa.select(self._db_entry_class).filter_by(func_name=self._func_name, args_hash=args_hash)
-            ).one_or_none()
+            ).scalar_one_or_none()
 
             if entry is not None and entry.state == SQLMemoState.DONE:
                 # Cache hit
@@ -381,22 +406,13 @@ class SQLMemo:
                         raise exc
                     # Otherwise just re-run the computation below
 
-            # Record as running
             self._instance_stats.misses += 1
-            entry = self._db_entry_class(
-                func_name=self._func_name,  # type: ignore
-                args_hash=args_hash,  # type: ignore
-                args_json=self._encode_args_helper(bound_args, self._args_json, _json=True),  # type: ignore
-                args_pickle=self._encode_args_helper(bound_args, self._args_pickle, _pickle=True),  # type: ignore
-                user=getpass.getuser(),  # type: ignore
-                hostname=socket.gethostname(),  # type: ignore
-                timestamp=self._utctimestamp(),  # type: ignore
-                state=SQLMemoState.RUNNING,  # type: ignore
-            )
+            # Record as running
+            entry = self._new_or_update_record(entry, args_hash, bound_args, SQLMemoState.RUNNING)
             session.add(entry)
             session.commit()
             entry_id = entry.id
-            session.expunge(entry)
+            start_time = entry.timestamp
 
         # Part 2: Run the function
         exc = None
@@ -407,29 +423,33 @@ class SQLMemo:
 
         # Part 3: Record the result
         with self._get_locked_session() as session:
-            # Note we do NOT re-read the entry from the database, we reuse the one from the transaction above
-            # The entry may have been deleted in the meantime (handled by merge below) or updated by
-            # another run of the same function and args (should be overwritten)
-            entry.runtime_seconds = self._utctimestamp() - entry.timestamp
+            entry = session.get(self._db_entry_class, entry_id)
+            if entry is None:
+                # The entry may have been deleted in the meantime (e.g by a trim)
+                entry = self._new_or_update_record(None, args_hash, bound_args, SQLMemoState.RUNNING)
+
+            entry.timestamp = self._utctimestamp()
+            entry.runtime_seconds = entry.timestamp - start_time
+
             if exc is not None:
                 self._instance_stats.errors += 1
                 if self._exception_check_helper(exc, self._record_exceptions):
                     entry.exception_pickle = self._dumps(exc)
                     entry.exception_str = str(exc)
                     entry.state = SQLMemoState.ERROR
-                    session.merge(entry)
+                    session.add(entry)
                 else:
                     # Do not record the exception, forget the function was ever running
-                    session.execute(sa.delete(self._db_entry_class).filter_by(id=entry_id))
+                    session.delete(entry)
                 # Propagate the exception either way
                 session.commit()
                 raise exc
 
             # Record the result
             entry.state = SQLMemoState.DONE
-            entry.value_json = self._encode_value_helper(value, self._value_json, _json=True)
+            entry.value_json = self._encode_value_helper(value, self._store_value_json, _json=True)
             entry.value_pickle = self._encode_value_helper(value, True, _pickle=True)
-            session.merge(entry)
+            session.add(entry)
             session.commit()
             return value
 
