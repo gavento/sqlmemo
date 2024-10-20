@@ -1,6 +1,6 @@
 [tool.poetry]
-name = "sqlcache"
-version = "0.1.0"
+name = "sqlmemo"
+version = "0.2.0"
 description = ""
 authors = ["Tomas Gavenciak <gavento@gmail.com>"]
 readme = "README.md"

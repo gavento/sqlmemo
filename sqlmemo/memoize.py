@@ -21,11 +21,11 @@ from sqlalchemy.orm import Session
 import dill
 
 from . import serialize
-from .schema import CachedFunctionEntry, FunctionState, cached_function_entry_class
+from .schema import MemoizeRecord, RecordState, concrete_memoize_record
 
 
 @dataclass
-class CachedFunctionStats:
+class MemoizeStats:
     hits: int
     misses: int
     cache_size: int | None = None
@@ -34,11 +34,11 @@ class CachedFunctionStats:
     cache_error: int | None = None
 
 
-class CachedFunction:
+class Memoize:
 
     DEFAULT_DB_URL = "sqlite:///:memory:"
-    DEFAULT_TABLE_NAME = "cached_function_data"
-    CACHE_ATTRIBUTE_NAME = "_sqlcache"
+    DEFAULT_TABLE_NAME = "memoize_data"
+    MEMO_ATTRIBUTE_NAME = "_memoize"
 
     def __init__(
         self,
@@ -54,18 +54,18 @@ class CachedFunction:
         record_exceptions: bool | Iterable[Type] = False,
         reraise_exceptions: bool | Iterable[Type] = False,
         use_dill: bool = False,
-        store_default_args: bool = True,
+        store_default_args: bool = False,
     ):
         """
-        Initializes a CachedFunction object.
+        Initializes a Memoize object.
 
         The cache stores the pickled result of the function, indexed by a hash of the function arguments and the function name.
 
         Parameters:
         - db (str | Engine | None): The database URL or SQLAlchemy Engine object. If None, an in-memory temporary DB is used.
-        - func (Callable | None): The function to be cached. If None, the function will be set later using the `__call__` method.
+        - func (Callable | None): The function to be memoized. If None, the function will be set later using the `__call__` method.
         - func_name (str | None): The name of the function. If None, the name will be inferred from the function object.
-        - table_name (str | None): The name of the database table to store the cached results. If None, a default table name will be used.
+        - table_name (str | None): The name of the database table to store the memoized results. If None, a default table name will be used.
         - hash_factory (Callable): The hash function to use for hashing the function arguments. SHA256 by default.
         - args_pickle (bool | Callable): Whether to store pickled function arguments in the cache.
         - args_json (bool | Callable): Whether to store JSON-encoded function arguments in the cache.
@@ -76,7 +76,7 @@ class CachedFunction:
         - use_dill (bool): Whether to use dill instead of pickle for serialization.
           Dill can serialize more types (lambdas, local classes, etc.) but is slower and complex objects
           serialization may be less stable across code changes and python versions.
-        - store_default_args (bool): Whether to store default arguments in the cache (on by default).
+        - store_default_args (bool): Whether to store default arguments in the cache (off by default).
           This is useful if you change the default arguments of the function and want to distinguish between calls with different defaults.
           Having it off allows e.g. adding new default arguments without invalidating existing cache records.
 
@@ -94,7 +94,7 @@ class CachedFunction:
         """
         if callable(db) and not isinstance(db, Engine):
             raise TypeError(
-                f"Expected Engine or str as `db`, got {type(db)}. Hint: use `@CachedFunction()` instead of `@CachedFunction`")
+                f"Expected `Engine` or `str` as `db`, got {type(db)}. Hint: use as `@CachedFunction()` instead of `@CachedFunction`")
 
         self._func_name = func_name
         self._func = None
@@ -121,7 +121,7 @@ class CachedFunction:
         if table_name is None:
             table_name = self.DEFAULT_TABLE_NAME
         self._table_name = table_name
-        self._db_entry_class = cached_function_entry_class(self._table_name)
+        self._db_entry_class = concrete_memoize_record(self._table_name)
 
         self._cache_hits = 0
         self._cache_misses = 0
@@ -132,6 +132,9 @@ class CachedFunction:
             self._engine = db
             self._db_url = str(db.url)  # Only as informative at this point
         else:
+            # If the db URL is not a full URL, assume it's a file path and prepend sqlite://
+            if '://' not in db:
+                db = f"sqlite:///{db}"
             self._db_url = db
             self._engine = None
 
@@ -245,17 +248,17 @@ class CachedFunction:
         _, args_dict = self._args_to_dict(args, kwargs)
         return self._hash_obj(args_dict)
 
-    def get_record_by_hash(self, args_hash: str) -> CachedFunctionEntry | None:
+    def get_record_by_hash(self, args_hash: str) -> MemoizeRecord | None:
         """Return the database record for the given hash, if it exists."""
         with self._get_locked_session() as session:
             return session.scalars(sa.select(self._db_entry_class).filter_by(
                 func_name=self._func_name, args_hash=args_hash)).one_or_none()
 
-    def get_record(self, *args, **kwargs) -> CachedFunctionEntry | None:
+    def get_record(self, *args, **kwargs) -> MemoizeRecord | None:
         """Return the database record for the given arguments, if it exists."""
         return self.get_record_by_hash(self.hash_args(*args, **kwargs))
 
-    def get_stats(self) -> CachedFunctionStats:
+    def get_stats(self) -> MemoizeStats:
         """
         Return the cache statistics.
 
@@ -265,16 +268,16 @@ class CachedFunction:
             # Count ids where func_name matches
             q = sa.select(sa.func.count(self._db_entry_class.id)
                           ).filter_by(func_name=self._func_name)
-            return CachedFunctionStats(
+            return MemoizeStats(
                 hits=self._cache_hits,
                 misses=self._cache_misses,
                 cache_size=session.scalars(q).one(),
                 cache_done=session.scalars(
-                    q.filter_by(state=FunctionState.DONE)).one(),
+                    q.filter_by(state=RecordState.DONE)).one(),
                 cache_running=session.scalars(
-                    q.filter_by(state=FunctionState.RUNNING)).one(),
+                    q.filter_by(state=RecordState.RUNNING)).one(),
                 cache_error=session.scalars(
-                    q.filter_by(state=FunctionState.ERROR)).one(),
+                    q.filter_by(state=RecordState.ERROR)).one(),
             )
 
     def trim_cache(self, max_records: int = 0) -> None:
@@ -307,18 +310,18 @@ class CachedFunction:
                 func_name=self._func_name, args_hash=args_hash)).one_or_none()
 
             if entry is not None:
-                if entry.state == FunctionState.DONE:
+                if entry.state == RecordState.DONE:
                     # Cache hit
                     assert entry.value_pickle is not None
                     self._cache_hits += 1
                     return self._loads(entry.value_pickle)
-                elif entry.state == FunctionState.RUNNING:
+                elif entry.state == RecordState.RUNNING:
                     # Computation is already running
                     warnings.warn(
                         f"Function {self._func_name} is already running with the same arguments, running again in parallel (will change in the future)")
                     # raise NotImplementedError(
                     #     "Function already running - TODO: complex waiting logic needed")
-                elif entry.state == FunctionState.ERROR:
+                elif entry.state == RecordState.ERROR:
                     # Last execution returned an exception
                     if self._reraise_exceptions is not False:
                         # Check if the exception should be reraised
@@ -344,7 +347,7 @@ class CachedFunction:
                     user=getpass.getuser(),
                     hostname=socket.gethostname(),
                     timestamp=self._utctimestamp(),
-                    state=FunctionState.RUNNING)
+                    state=RecordState.RUNNING)
             session.add(entry)
             session.commit()
             entry_id = entry.id
@@ -368,7 +371,7 @@ class CachedFunction:
                 if self._exception_check_helper(exc, self._record_exceptions):
                     entry.exception_pickle = self._dumps(exc)
                     entry.exception_str = str(exc)
-                    entry.state = FunctionState.ERROR
+                    entry.state = RecordState.ERROR
                 else:
                     # Do not record the exception, forget the function was ever running
                     session.execute(sa.delete(self._db_entry_class).filter_by(id=entry_id))
@@ -376,7 +379,7 @@ class CachedFunction:
                     raise exc
             else:
                 # Record the result
-                entry.state = FunctionState.DONE
+                entry.state = RecordState.DONE
                 entry.value_json = self._encode_value_helper(
                     value, self._value_json, _json=True)
                 entry.value_pickle = self._encode_value_helper(
@@ -408,7 +411,7 @@ class CachedFunction:
             async def awrapper(*args, **kwargs):
                 return await self._call_func_async(*args, **kwargs)
 
-            awrapper.__setattr__(self.CACHE_ATTRIBUTE_NAME, self)
+            awrapper.__setattr__(self.MEMO_ATTRIBUTE_NAME, self)
             return awrapper
         else:
 
@@ -416,5 +419,5 @@ class CachedFunction:
             def wrapper(*args, **kwargs):
                 return self._call_func_sync(*args, **kwargs)
 
-            wrapper.__setattr__(self.CACHE_ATTRIBUTE_NAME, self)
+            wrapper.__setattr__(self.MEMO_ATTRIBUTE_NAME, self)
             return wrapper

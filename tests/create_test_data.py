@@ -2,7 +2,7 @@ from pathlib import Path
 import pytest
 
 from sqlalchemy import create_engine
-from sqlcache.cached_function import CachedFunction, FunctionState
+from sqlcache.memoize import Memoize, RecordState
 
 
 def create_test_data_plain(path: Path):
@@ -11,7 +11,7 @@ def create_test_data_plain(path: Path):
 
     g = None
 
-    @CachedFunction(
+    @Memoize(
         engine, record_exceptions=True, reraise_exceptions=True, args_pickle=True, func_name="f", table_name="foo_bar"
     )
     def f(x, *args, y=42, z=None, **kwargs):
@@ -25,7 +25,7 @@ def create_test_data_plain(path: Path):
     f(1, z="x", q=b"hello\0")
     f(1, 2, 3, foo="bar")
     g = {1, 2, 3, 4}
-    f(1.3, float("nan"), float("inf"), z=frozenset({1, 2, 4}), w=FunctionState.ERROR)
+    f(1.3, float("nan"), float("inf"), z=frozenset({1, 2, 4}), w=RecordState.ERROR)
     with pytest.raises(ValueError):
         f("err")
 
@@ -41,7 +41,7 @@ def create_test_data_dill(path: Path):
 
     g = None
 
-    @CachedFunction(
+    @Memoize(
         engine, record_exceptions=True, reraise_exceptions=True, args_pickle=True, func_name="f", use_dill=True
     )
     def f(x, *args, y=42, z=None, **kwargs):
@@ -66,7 +66,7 @@ def create_test_data_dill(path: Path):
     g = Foo(1)
     f(1, 2, 3, foo="bar")
     g = Foo(2).foo
-    f(1.3, float("nan"), float("inf"), z=frozenset({1, 2, 4}), w=FunctionState.ERROR)
+    f(1.3, float("nan"), float("inf"), z=frozenset({1, 2, 4}), w=RecordState.ERROR)
     with pytest.raises(ValueError):
         f("err")
 
@@ -81,7 +81,7 @@ def create_test_data_json(path: Path):
     engine = create_engine(f"sqlite:///{path}")
     g = None
 
-    @CachedFunction(
+    @Memoize(
         engine,
         record_exceptions=True,
         reraise_exceptions=True,
