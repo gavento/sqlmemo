@@ -259,7 +259,9 @@ class SQLMemo:
             args, lambda args: param(*args.args, **args.kwargs) if callable(param) else dict(args.arguments), **kwargs
         )
 
-    def _exception_check_helper(self, exception: Exception, param: bool | Iterable[Type] | Callable[[Exception], bool]) -> bool:
+    def _exception_check_helper(
+        self, exception: Exception, param: bool | Iterable[Type] | Callable[[Exception], bool]
+    ) -> bool:
         if isinstance(param, bool):
             return param
         if callable(param):
@@ -296,13 +298,13 @@ class SQLMemo:
         This requires a database query (though a fast one).
         """
         with self._get_locked_session() as session:
-            # Count ids where func_name matches, grouped by state
+            q0 = session.query(sa.func.count(self._db_entry_class.id)).filter_by(func_name=self._func_name)
             q = sa.select(
-                sa.func.count(self._db_entry_class.id).label("total"),
-                sa.func.sum(sa.case((self._db_entry_class.state == SQLMemoState.DONE, 1), else_=0)).label("done"),
-                sa.func.sum(sa.case((self._db_entry_class.state == SQLMemoState.RUNNING, 1), else_=0)).label("running"),
-                sa.func.sum(sa.case((self._db_entry_class.state == SQLMemoState.ERROR, 1), else_=0)).label("error"),
-            ).filter_by(func_name=self._func_name)
+                q0.label("total"),
+                q0.filter_by(state=SQLMemoState.DONE).label("done"),
+                q0.filter_by(state=SQLMemoState.RUNNING).label("running"),
+                q0.filter_by(state=SQLMemoState.ERROR).label("error"),
+            )
             result = session.execute(q).one()
 
             return DBStats(
@@ -312,23 +314,27 @@ class SQLMemo:
                 records_error=result.error,
             )
 
-    def trim(self, max_records: int = 0) -> None:
+    def trim(self, keep_records: int = 0) -> None:
         """
         Trim the DB to the given number of newest records for this function; by default deletes all records.
         """
         with self._get_locked_session() as session:
-            # Delete all rows where func_name matches, ordered by timestamp, except the max_records latest
-            q = (
-                sa.select(self._db_entry_class.id)
-                .filter_by(func_name=self._func_name)
-                .order_by(self._db_entry_class.timestamp.desc())
-                .limit(max_records)
-            )
-            session.execute(
-                sa.delete(self._db_entry_class)
-                .filter_by(func_name=self._func_name)
-                .where(~self._db_entry_class.id.in_(q))
-            )
+            if keep_records == 0:
+                session.execute(sa.delete(self._db_entry_class).filter_by(func_name=self._func_name))
+            else:
+                # Delete all rows where func_name matches, ordered by timestamp, except the keep_records latest
+                q = (
+                    sa.select(self._db_entry_class.id)
+                    .filter_by(func_name=self._func_name)
+                    .order_by(self._db_entry_class.timestamp.desc())
+                    .limit(keep_records)
+                )
+                session.execute(
+                    sa.delete(self._db_entry_class)
+                    .filter_by(func_name=self._func_name)
+                    .where(~self._db_entry_class.id.in_(q))
+                )
+            session.commit()
 
     def __repr__(self) -> str:
         return f"<{self.__class__.__name__} {self._func_name!r} at {self._db_url!r} table {self._table_name!r} ({self.stats.hits} hits, {self.stats.misses} misses, {self.stats.errors} errors)>"
