@@ -12,7 +12,7 @@ def create_test_data_plain(path: Path):
 
     @SQLMemo(
         path,
-        record_exceptions=True,
+        store_exceptions=True,
         store_args_pickle=True,
         func_name="f",
         table_name="foo_bar",
@@ -43,7 +43,7 @@ def create_test_data_dill(path: Path):
 
     @SQLMemo(
         path,
-        record_exceptions=True,
+        store_exceptions=True,
         store_args_pickle=True,
         func_name="f",
         use_dill=True,
@@ -92,7 +92,7 @@ def create_test_data_json(path: Path):
 
     @SQLMemo(
         path,
-        record_exceptions=True,
+        store_exceptions=True,
         store_args_pickle=True,
         func_name="f",
         store_args_json=True,

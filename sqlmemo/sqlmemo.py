@@ -36,17 +36,27 @@ class MemoizedFn(Protocol[P, R]):
 
 @dataclass
 class InstanceStats:
-    hits: int
-    misses: int
-    errors: int
+    """
+    Statistics for a single SQLMemo instance.
+
+    Note that these statistics do not include any past data stored in the database.
+    """
+
+    hits: int  # Number of cache hits
+    misses: int  # Number of cache misses
+    errors: int  # How many of the function calls (misses) resulted in an exception
 
 
 @dataclass
 class DBStats:
-    records: int
-    records_done: int
-    records_running: int
-    records_error: int
+    """
+    Statistics of the records in the database associated with this function.
+    """
+
+    records: int  # Total number of records in the database
+    records_done: int  # Number of records with state=DONE
+    records_running: int  # Number of records with state=RUNNING
+    records_error: int  # Number of records with state=ERROR
 
 
 class SQLMemo:
@@ -62,45 +72,82 @@ class SQLMemo:
         store_args_pickle: bool | Iterable[str] | Callable = False,
         store_args_json: bool | Iterable[str] | Callable = False,
         store_value_json: bool | Callable = False,
-        record_exceptions: bool | Iterable[Type] | Callable[[Exception], bool] = False,
+        store_exceptions: bool | Iterable[Type] | Callable[[Exception], bool] = False,
         reraise_exceptions: bool | Iterable[Type] | Callable[[Exception], bool] = False,
         hash_factory: Callable = hashlib.sha256,
         use_dill: bool = False,
         apply_default_args: bool = True,
     ):
         """
-        Initializes a Memoize object.
+        Initializes a SQLMemo wrapper around a given function.
 
-        The cache stores the pickled result of the function, indexed by a hash of the function arguments and the function name.
+        The cache stores the pickled result of the function calls in a SQL database, indexed by a hash of the function arguments and the function name.
 
-        Parameters:
-        - db (str | Engine | None): The database URL or SQLAlchemy Engine object. If None, an in-memory temporary DB is used.
-        - func_name (str | None): The name of the function. If None, the name will be inferred from the function passed to the decorator.
-        - table_name (str | None): The name of the database table to store the memoized results. If None, a default table name will be used.
+        ### Parameters
+
+        - db (str | Path | Engine | None): The database URL, path, or SQLAlchemy Engine object. If None, an in-memory temporary DB is used. If a Path or a str without a scheme is provided, SQLite is assumed.
+        - func_name (str | None): The name of the function. If None, the name will be inferred from the qualified name of the function passed to the decorator.
+        - table_name (str | None): The name of the database table to store the memoized results. Defaults to "sqlmemo_data".
+        - store_args_pickle (bool | Iterable[str] | Callable): Whether and how to store pickled function arguments in the cache (see below).
+        - store_args_json (bool | Iterable[str] | Callable): Whether and how to store JSON-encoded function arguments in the cache (see below).
+        - store_value_json (bool | Callable): Whether and how to store JSON-encoded function return value in the cache (see below).
+        - store_exceptions (bool | Iterable[Type] | Callable[[Exception], bool]): Which exceptions to store from the wrapped function when called (see below).
+        - reraise_exceptions (bool | Iterable[Type] | Callable[[Exception], bool]): Which exceptions to reraise from previously recorded exceptions in the cache (see below).
         - hash_factory (Callable): The hash function to use for hashing the function arguments. SHA256 by default.
-        - args_pickle (bool | Callable): Whether to store pickled function arguments in the cache.
-        - args_json (bool | Callable): Whether to store JSON-encoded function arguments in the cache.
-        - value_json (bool | Callable): Whether to store JSON-encoded function return value in the cache.
-        - record_exceptions (bool | Iterable[Type]): Whether to record exceptions from the wrapped function when called. In this case, they are propoagated either way.
-        - reraise_exceptions (bool | Iterable[Type]): Whether to reraise exceptions previously recorded in the cache with the same arguments.
-        - use_dill (bool): Whether to use dill instead of pickle for serialization.
-          Dill can serialize more types (lambdas, local classes, etc.) but is slower and complex objects
-          serialization may be less stable across code changes and python versions.
-        - apply_default_args (bool): Whether to apply default arguments to the function call before hashing and storage (on by default).
-          This is the mode refensive setting (e.g. sensitive to changing argument defaults or adding new arguments).
-          It does allow e.g. for adding a default value to an argument where it was already called with the default.
+        - use_dill (bool): Whether to use dill instead of pickle for serialization. Dill can serialize more types (lambdas, local classes, etc.) but is slower and complex objects serialization may be less stable across code changes and python versions.
+        - apply_default_args (bool): Whether to apply default arguments to the function call before hashing and storage (True by default). True is the more defensive setting (e.g. sensitive to changing argument defaults or adding new arguments). It does allow e.g. for adding a default value to an argument where it was already called with the default.
 
-        The `args_*` and `value_json` parameters can be set to True or False to enable or disable the respective feature, or to a callable to transform the
-        value before storing it. This is useful if you e.g. want to extract only some arguments or their features to be stored in the cache (e.g. as JSON).
-        You can also split arguments to be stored as JSON vs pickled. Note that the argument values are NEVER used to match future calls, only their hashes.
-        Example: `args_json=lambda x, y, z: dict(x=x, sy=str(y), z_len=len(z)}, value_json=lambda r: r[0]`.
+        ### Storing arguments and return values
 
-        For the `*_exceptions`, True stores/reraises all exceptions, False disables all, an iterable of types allows subclasses of the given exception types.
-        If an exceprion is not reraised on a subsequent call, the computation is repeated and the new outcome is stored, overwriting the old record.
+        While the cache always stores the pickled result of the function calls, it can also optionally store the function arguments as JSON and/or pickle, and can store the function return value as JSON. All of the three optional fields can be further customized to:
 
-        Raises:
-        - ValueError: If `reraise_exceptions` is True but `record_exceptions` is False.
-        - The stored exception: If `reraise_exceptions` allows the exception and the exception is not recorded in the cache.
+        - Store only a subset of arguments
+        - Transform the arguments or the return value before storage, e.g. to extract only some arguments or their features to be stored in the cache in a more accessible format (JSON)
+
+        The values of the parameters can be:
+        - True: store the value as is.
+        - False: do not store the value.
+        - Callable: transform the value using the callable before storage. The callable is called with exactly the same arguments as the wrapped function for argument transformation, and with the return value (single argument) for the return value transformation.
+        - Iterable[str]: store only the values of the arguments with the given names (not applicable for `store_value_json`).
+
+        The JSON versions of the arguments and return values may be e.g. useful to access the SQL database with a query, e.g. `SELECT * FROM sqlmemo_data WHERE args_json->>'x' = 'value'`.
+
+        Note that the stored argument values are NEVER used to match future calls, only the stored hashes.
+
+        ### Storing and reraising exceptions
+
+        Any exception thrown by the wrapped function can be optionally stored in the cache, and optionally reraised on a subsequent call.
+        These features are controlled by `store_exceptions` and `reraise_exceptions` parameters, and act independently: storing an exception does not mean it will be reraised, and vice versa. When a stored exception is found without `reraise_exceptions`, the computation is repeated and the new value (or exception, with `store_exceptions` enabled) is stored, overwriting the old record.
+
+        The values of the parameters can be:
+        - True: store/reraise all exceptions.
+        - False: do not store/reraise any exceptions.
+        - Iterable[Type]: store/reraise exceptions that are subclasses of any of the given types. Example: `store_exceptions=(ValueError, TypeError)`.
+        - Callable[[Exception], bool]: store/reraise exceptions for which the callable returns True. Example: `store_exceptions=lambda e: isinstance(e, ValueError)`.
+
+        Note that exceptions raised in the called wrapped function are propagated either way, regardless of `store_exceptions` or `reraise_exceptions`.
+
+        ### Database
+
+        If not database URL is provided to the constructor, it can be set later using `SQLMemo.set_engine(...)`. This is useful to e.g. configure the database engine based on dynamic configuration.
+
+        The connection to the database and any database structures are created lazily on the first call to the wrapper. If you want to trigger the creation of the database structures (e.g. tables) before the first call, you can use `SQLMemo.get_db_stats()`.
+
+        ### Other
+
+        The instance is fully thread-safe after construction, all user-facing functions use a mutex internally to ensure thread-safety. The wrapper can be called from multiple threads at once, and the called function may call itself recursively.
+
+        The instance provides two sets of statistics:
+        - `stats`: statistics of this instance of SQLMemo, including the number of hits, misses, and errors.
+        - `get_db_stats()`: statistics of the records in the database associated with this function.
+
+        You can access the SQLMemo instance as the `_sqlmemo` attribute of the wrapped function. Example:
+        ```python
+        @SQLMemo()
+        def my_func(...):
+            ...
+        my_func._sqlmemo.stats  # InstanceStats(hits=0, misses=0, errors=0)
+        ```
         """
         if callable(db) and not isinstance(db, Engine):
             raise TypeError(
@@ -113,7 +160,7 @@ class SQLMemo:
         self._store_args_json = store_args_json
         self._store_value_json = store_value_json
         self._hash_factory = hash_factory
-        self._record_exceptions = record_exceptions
+        self._record_exceptions = store_exceptions
         self._reraise_exceptions = reraise_exceptions
         self._apply_default_args = apply_default_args
         self._use_dill = use_dill
@@ -126,7 +173,7 @@ class SQLMemo:
         # Instance attributes
         self._func = None
         self._func_sig = None
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._instance_stats = InstanceStats(hits=0, misses=0, errors=0)
 
         # Database attributes
@@ -146,22 +193,23 @@ class SQLMemo:
 
         Useful to e.g. configure the database engine based on dynamic configuration.
         """
-        if self._engine is not None:
-            raise RuntimeError(f"Engine already set (to {self._engine!r})")
-        if isinstance(engine_or_url, Engine):
-            self._engine = engine_or_url
-            self._db_url = str(self._engine.url)
-            return
+        with self._lock:
+            if self._engine is not None:
+                raise RuntimeError(f"Engine already set (to {self._engine!r})")
+            if isinstance(engine_or_url, Engine):
+                self._engine = engine_or_url
+                self._db_url = str(self._engine.url)
+                return
 
-        db_url = str(engine_or_url)
-        if "://" not in db_url:
-            db_url = f"sqlite:///{db_url}"
-        if db_url.startswith("sqlite://"):
-            connect_args = dict(check_same_thread=False)  # We are using locks to ensure thread-safety here
-            self._engine = sa.create_engine(db_url, connect_args=connect_args, poolclass=sa.StaticPool)
-        else:
-            self._engine = sa.create_engine(db_url)
-        self._db_url = db_url
+            db_url = str(engine_or_url)
+            if "://" not in db_url:
+                db_url = f"sqlite:///{db_url}"
+            if db_url.startswith("sqlite://"):
+                connect_args = dict(check_same_thread=False)  # We are using locks to ensure thread-safety here
+                self._engine = sa.create_engine(db_url, connect_args=connect_args, poolclass=sa.StaticPool)
+            else:
+                self._engine = sa.create_engine(db_url)
+            self._db_url = db_url
 
     @contextmanager
     def _get_locked_session(self) -> Generator[Session, None, None]:
@@ -306,7 +354,8 @@ class SQLMemo:
         """
         Return the statistics for this instance.
         """
-        return dataclasses.replace(self._instance_stats)
+        with self._lock:
+            return dataclasses.replace(self._instance_stats)
 
     def get_db_stats(self) -> DBStats:
         """

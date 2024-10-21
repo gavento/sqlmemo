@@ -288,7 +288,7 @@ class TestCachedFunction:
         assert cache.get_db_stats().records >= 2
 
     def test_exception_reraising(self):
-        @SQLMemo(record_exceptions=True, reraise_exceptions=True)
+        @SQLMemo(store_exceptions=True, reraise_exceptions=True)
         def fn(x):
             if x == 0:
                 raise ValueError("Cannot divide by zero")
@@ -640,13 +640,13 @@ class TestCachedFunction:
             return x * 2
 
         @SQLMemo(
-            record_exceptions=lambda e: isinstance(e, (ValueError, TypeError)),
+            store_exceptions=lambda e: isinstance(e, (ValueError, TypeError)),
             reraise_exceptions=lambda e: not isinstance(e, TypeError),
         )
         def lambda_filter(x):
             return sus(x)
 
-        @SQLMemo(record_exceptions=[ValueError, TypeError], reraise_exceptions=[ValueError])
+        @SQLMemo(store_exceptions=[ValueError, TypeError], reraise_exceptions=[ValueError])
         def list_filter(x):
             return sus(x)
 
