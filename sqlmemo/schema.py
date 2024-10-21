@@ -31,7 +31,6 @@ class SQLMemoRecord:
 
 
 def concrete_memoize_record(table_name) -> Type[SQLMemoRecord]:
-
     ## NB: We want to have separate metadata for each table, so we can't use the default DeclarativeBase
     class Base(DeclarativeBase):
         type_annotation_map = {

@@ -1,6 +1,7 @@
-from collections import namedtuple
 import hashlib
+from collections import namedtuple
 from pathlib import Path
+
 import pytest
 
 from sqlmemo.sqlmemo import SQLMemo, SQLMemoState

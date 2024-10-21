@@ -1,21 +1,21 @@
 import hashlib
 import math
 import os
-from pathlib import Path
 import pickle
 import shutil
 import threading
 import time
 import unittest
-import pytest
+from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from sqlalchemy import create_engine, text
+
 from sqlmemo.sqlmemo import SQLMemo, SQLMemoState
 
 
 class TestCachedFunction:
-
     DATA_PATH = Path(__file__).parent / "data"
 
     def _is_hit(self, cached_f, *args, **kwargs):
@@ -198,7 +198,6 @@ class TestCachedFunction:
         assert c2.get_db_stats().records == 1
 
     def test_stats_and_trim(self):
-
         @SQLMemo()
         def f(x):
             time.sleep(0.01)

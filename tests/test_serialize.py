@@ -1,6 +1,7 @@
 import dataclasses
 import math
 import unittest
+
 from sqlmemo.serialize import hash_obj, jsonize
 
 
@@ -17,7 +18,6 @@ class Book:
 
 
 class JsonizeTest(unittest.TestCase):
-
     def test_primitive_types(self):
         self.assertEqual(jsonize(42), 42)
         self.assertEqual(jsonize(3.14), 3.14)
@@ -40,7 +40,6 @@ class JsonizeTest(unittest.TestCase):
 
 
 class HashObjTest(unittest.TestCase):
-
     def test_primitive_types(self):
         # Test hashing of primitive types
         self.assertEqual(hash_obj(42), hash_obj(42))

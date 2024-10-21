@@ -32,7 +32,7 @@ cache = slow_fun._sqlcache
 assert cache.cache_hits == 1
 assert cache.cache_misses == 1
 # Get the number of items in the database for this function
-assert cache.get_cache_size() == 1 
+assert cache.get_cache_size() == 1
 # ... and clear it (only the data for this function)
 ```
 
@@ -95,20 +95,20 @@ Or you can directly work with the SQL database. The schema is the following, usu
 
 ```sql
 CREATE TABLE cached_func1(
-        id INTEGER NOT NULL, 
-        timestamp FLOAT NOT NULL, 
-        func_name VARCHAR NOT NULL, 
-        args_hash VARCHAR NOT NULL, 
-        state VARCHAR(7) NOT NULL, 
-        user VARCHAR, 
-        hostname VARCHAR, 
-        runtime_seconds FLOAT, 
-        args_pickle BLOB, 
-        args_json JSON, 
-        return_pickle BLOB, 
-        return_json JSON, 
-        exception_pickle BLOB, 
-        exception_str TEXT, 
+        id INTEGER NOT NULL,
+        timestamp FLOAT NOT NULL,
+        func_name VARCHAR NOT NULL,
+        args_hash VARCHAR NOT NULL,
+        state VARCHAR(7) NOT NULL,
+        user VARCHAR,
+        hostname VARCHAR,
+        runtime_seconds FLOAT,
+        args_pickle BLOB,
+        args_json JSON,
+        return_pickle BLOB,
+        return_json JSON,
+        exception_pickle BLOB,
+        exception_str TEXT,
         PRIMARY KEY (id)
 )
 CREATE UNIQUE INDEX ix_cached_func1_func_name_args_hash ON cached_func1 (func_name, args_hash)
@@ -122,7 +122,7 @@ The cache is indexed by:
 - The DB table name derived from qualified function name (`func.__qualname__`) or given as `table_name`. If you want more functions to share a table, just set the same tablename.
 - The qualified function name (`func.__qualname__`) or given as `func_name`. If you rename or move a function and want to keep using the cache, set `func_name` and `table_name` explicitly.
 - SHA256 hash of all the arguments. This means the following:
-  - We recursively walk the argument structure, not all types are supported. Dictionary and set keys are sorted (i.e. ordered dictionary ordering is ignored). `__hash__` is ignored because it is not stable between runs. 
+  - We recursively walk the argument structure, not all types are supported. Dictionary and set keys are sorted (i.e. ordered dictionary ordering is ignored). `__hash__` is ignored because it is not stable between runs.
   - The default argument values are applied (so for `def f(x=42)`, `f()` and `f(42)` are identical).
   - It does not matter if *declared* arguments are given by name or position (e.g. `f(42)` and `f(x=42)` are the same)
   - If your function has `*args` and/or `**kwargs` parameters, these are stored just as `args` resp `kwargs` parameters (or named however you named them).

@@ -5,7 +5,6 @@ import functools
 import getpass
 import hashlib
 import inspect
-from pathlib import Path
 import pickle
 import re
 import socket
@@ -13,6 +12,7 @@ import threading
 import warnings
 from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Generator, Iterable, Optional, ParamSpec, Protocol, Type, TypeVar, cast
 
 import sqlalchemy as sa
@@ -29,7 +29,8 @@ R = TypeVar("R", covariant=True)  # Captures the return type
 
 # Define a protocol with a callable signature and an additional '_sqlmemo' attribute
 class MemoizedFn(Protocol[P, R]):
-    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R: ...
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
+        ...
 
     _sqlmemo: "SQLMemo"
 
@@ -50,7 +51,6 @@ class DBStats:
 
 
 class SQLMemo:
-
     DEFAULT_DB_URL = "sqlite:///:memory:"
     DEFAULT_TABLE_NAME = "sqlmemo_data"
 
@@ -227,7 +227,9 @@ class SQLMemo:
         else:
             return pickle.loads(data)
 
-    def _args_to_dict(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple[inspect.BoundArguments, dict[str, Any]]:
+    def _args_to_dict(
+        self, args: tuple[Any, ...], kwargs: dict[str, Any]
+    ) -> tuple[inspect.BoundArguments, dict[str, Any]]:
         """
         Create a single dict with all named arguments, optionally with default values applied.
         The extra positional arguments are preserved, named as in the function signature (usually `args` for `*args`).
@@ -238,7 +240,9 @@ class SQLMemo:
         if self._apply_default_args:
             bound_args.apply_defaults()
         d = dict(bound_args.arguments)
-        kwargs_name = next((p.name for p in self._func_sig.parameters.values() if p.kind == inspect.Parameter.VAR_KEYWORD), None)
+        kwargs_name = next(
+            (p.name for p in self._func_sig.parameters.values() if p.kind == inspect.Parameter.VAR_KEYWORD), None
+        )
         if kwargs_name is not None and kwargs_name in d:
             kw = d.pop(kwargs_name)
             d.update(kw)
