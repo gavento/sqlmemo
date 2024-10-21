@@ -26,3 +26,10 @@ repos:
     rev: v8.21.1
     hooks:
       - id: gitleaks-docker
+
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.7.10
+    hooks:
+      - id: bandit
+        additional_dependencies: ["bandit[toml]"]
+        args: ["-c", "pyproject.toml"]

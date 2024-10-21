@@ -29,8 +29,7 @@ R = TypeVar("R", covariant=True)  # Captures the return type
 
 # Define a protocol with a callable signature and an additional '_sqlmemo' attribute
 class MemoizedFn(Protocol[P, R]):
-    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
-        ...
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R: ...
 
     _sqlmemo: "SQLMemo"
 

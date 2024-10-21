@@ -577,7 +577,10 @@ platformdirs = ">=3.9.1,<5"
 docs = ["furo (>=2023.7.26)", "proselint (>=0.13)", "sphinx (>=7.1.2,!=7.3)", "sphinx-argparse (>=0.4)", "sphinxcontrib-towncrier (>=0.2.1a0)", "towncrier (>=23.6)"]
 test = ["covdefaults (>=2.3)", "coverage (>=7.2.7)", "coverage-enable-subprocess (>=1)", "flaky (>=3.7)", "packaging (>=23.1)", "pytest (>=7.4)", "pytest-env (>=0.8.2)", "pytest-freezer (>=0.4.8)", "pytest-mock (>=3.11.1)", "pytest-randomly (>=3.12)", "pytest-timeout (>=2.1)", "setuptools (>=68)", "time-machine (>=2.10)"]
 
+[extras]
+dill = ["dill"]
+
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.10"
-content-hash = "661bd0d460c9f57c2fec868df0cc176c9d6d2f7a6e0e1356d3d1b312c7e2b7e9"
+content-hash = "2730b6dc03a9644bea68cf7655cc49c57ebd175e8fd4d16810dd7ddfbf966b4f"

@@ -20,9 +20,19 @@ pytest = "^8.3.2"
 isort = "^5.13.2"
 pre-commit = "^4.0.1"
 
+[tool.poetry.extras]
+dill = ["dill"]
+
 [tool.black]
 line-length = 120
 
 [tool.isort]
 profile = "black"
 line_length = 120
+
+[tool.bandit]
+skips = [
+    "B101",  # Asserts are ok
+    "B403",  # Importing pickle and dill is ok
+    "B301",  # Using pickle and dill is ok
+]
