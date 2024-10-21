@@ -3,6 +3,7 @@ import math
 import os
 import pickle
 import shutil
+import sys
 import threading
 import time
 import unittest
@@ -15,6 +16,7 @@ from sqlalchemy import create_engine, text
 from sqlmemo.sqlmemo import SQLMemo, SQLMemoState
 
 
+@pytest.mark.filterwarnings("ignore:The decorated function qualified name")
 class TestCachedFunction:
     DATA_PATH = Path(__file__).parent / "data"
 
@@ -42,7 +44,7 @@ class TestCachedFunction:
         assert expensive_function(2, z=True) == 5
         assert count == 2
 
-    def test_fib(self):
+    def test_recursive_fib(self):
         count = 0
 
         @SQLMemo()
@@ -236,8 +238,8 @@ class TestCachedFunction:
         assert st.records == 0
         assert st.records_done == 0
 
-    def test_parallel_calls(self, tmp_path):
-        # @CachedFunction(f"sqlite:///{tmp_path}/tst.sqlite")
+    @pytest.mark.filterwarnings("ignore:.*running again in parallel")
+    def test_parallel_calls(self):
         @SQLMemo()
         def slow_function(x):
             time.sleep(0.1)
@@ -266,8 +268,7 @@ class TestCachedFunction:
         stats = slow_function._sqlmemo.get_db_stats()
         assert stats.records == 5
 
-    def test_parallel_trim(self, tmp_path):
-        # @CachedFunction(f"sqlite:///{tmp_path}/tst.sqlite")
+    def test_parallel_trim(self):
         cache = SQLMemo()
 
         @cache
@@ -389,6 +390,9 @@ class TestCachedFunction:
         with pytest.raises(ValueError):
             f("err")
 
+    @pytest.mark.skipif(
+        sys.version_info > (3, 10), reason="Dill test data is not compatible between Python major versions (yet)"
+    )
     def test_read_db_file_dill(self, tmp_path):
         db_src = self.DATA_PATH / "test_data_dill.sqlite"
         db_path = tmp_path / "test_data_dill.sqlite"
