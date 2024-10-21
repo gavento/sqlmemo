@@ -5,6 +5,5 @@
       "toolsToInstall": "poetry"
     }
   },
-  "postStartCommand": "poetry install"
+  "postStartCommand": "poetry install && pre-commit install"
 }
-
