@@ -17,7 +17,7 @@ from sqlmemo.sqlmemo import SQLMemo, SQLMemoState
 
 
 @pytest.mark.filterwarnings("ignore:The decorated function qualified name")
-class TestCachedFunction:
+class TestSQLMemo:
     DATA_PATH = Path(__file__).parent / "data"
 
     def _is_hit(self, cached_f, *args, **kwargs):
