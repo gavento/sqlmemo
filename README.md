@@ -1,138 +1,197 @@
-# SQL-backed computation cache
+# SQLMemo: Memoizing SQL-backed Computation Cache
 
-This library implements simple yet powerful persistent memoization cache.
+![PyPI - Version](https://img.shields.io/pypi/v/sqlmemo) ![GitHub branch status](https://img.shields.io/github/checks-status/gavento/sqlmemo/main) [![codecov](https://codecov.io/gh/gavento/sqlmemo/graph/badge.svg?token=AtpsvIAOnt)](https://codecov.io/gh/gavento/sqlmemo)
 
-* Stored in SQL. SQLite works great for small to medium experiments and can be queried externally.
-* Use with functions with very rich argument signature and (almost) arbitrary return values:
-  * Arguments need to be combination of primitive types (`int`, `float`, `str`, `bytes`, ...), `dict`s, `list`s, `set`s, `tuple`s, and anhy user-defined `dataclass`es. May include keyword ags, default values, etc.
-  * Return type can be anything `pickle`-able, optionaly extended by [dill](https://github.com/uqfoundation/dill), which includes e.g. `lambda`s, local-defined classes and nested functions, etc.
-* The database can store a lot more info about the records (JSONified subset of arguments, JSON of result, failed function executions, ...) and can be accessed externally, e.g. by other tools. Also supports adding secondary indexes (even on JSON fields).
-* The cache is resistant to bit-rot: Uses a fixed hash function (SHA256), tested to preserve hashes between releases, does not distinguish between the same argument passed.
-* Fast, thread-safe and well-tested. Optional compression. Async and parallel in the works.
+SQLMemo is a powerful and flexible persistent memoization cache for Python, primarily intended for small- to medium-scale scientific computing, and backed by an SQL database. It provides a simple yet robust way to cache function results, improving performance for expensive computations and enabling efficient data reuse across multiple runs.
 
-## Quickstart
+## Key Features
 
-Install with `pip install pip install git+https://github.com/gavento/sqlcache`, or your favorite python package manager.
+- SQL-backed storage (SQLite by default, supports other databases)
+- Rich argument signature support (primitives, dicts, lists, sets, tuples, dataclasses, good handling of `*args` and `**kwargs`)
+- Flexible return value storage (anything pickle-able, with optional dill support)
+- Optional argument storage (only hashes by default), optional JSONified argument and/or result storage (e.g. for programmatic or external SQL access to the records), all with filtering and transformation options (see the API below)
+- Databases stable between Python versions (tested with Python 3.10-3.13)
+- Thread-safe, can be used from multiple processes and machines
+- Optional exception storage and optional re-raising of stored exceptions
+- Simplicity, only a single dependency (SQLAlchemy), well-tested and properly typed
+
+## Quick Start
+
+Install SQLMemo using pip:
+
+```bash
+pip install sqlmemo
+```
+
+Here's a basic example of how to use SQLMemo:
 
 ```python
-from sqlcache import CachedFunction
+from sqlmemo import SQLMemo
 import time
 
-# By default, the cache is only in-memory. Multiple functions can share a database.
-@CachedFunction("sqlite:///cache.sqlite")
-def slow_fun(x, y=1.0, *zs):
-  time.sleep(1.0)
-  return tuple(x, y, *zs)
+# Any URI supported by SQLAlchemy, uses SQLite by default
+# Multiple functions can be cached in the same database
+@SQLMemo("./cache.sqlite")
+def slow_function(x, y=1.0, *args):
+    time.sleep(1.0)
+    return (x, y, *args)
 
-slow_fun("a", "c", "d", y="b") # returns ("a", "b", "c", "d") after 1s
-slow_fun("a", "c", "d", y="b") # returns ("a", "b", "c", "d") immediately
-# Access the CachedFunction instance for the function
-cache = slow_fun._sqlcache
-# Some stats (just for this instance of the cache)
-assert cache.cache_hits == 1
-assert cache.cache_misses == 1
-# Get the number of items in the database for this function
-assert cache.get_cache_size() == 1
-# ... and clear it (only the data for this function)
+# First call: takes about 1 second
+result1 = slow_function("a", "b", "c")
+print(result1)  # ('a', 'b', 'c')
+
+# Second call: returns immediately from cache
+result2 = slow_function("a", "b", "c")
+print(result2)  # ('a', 'b', 'c')
+
+# Access the SQLMemo instance itself
+cache = slow_function._sqlmemo
+
+# Check cache statistics
+print(cache.stats)  # InstanceStats(hits=1, misses=1, errors=0)
+
+# Get database statistics
+print(cache.get_db_stats())  # DBStats(records=1, records_done=1, records_running=0, records_error=0)
+
+# Trim the database to keep only the most recent 10 records for this function
+cache.trim(keep_records=10)
+
+# Get the database entry for the call above
+record = cache.get_record(x="a", y="b", args=("c",))
+print(record)  # SQLMemoRecord(id=1, func_name='slow_function', args_hash='...', ...
 ```
 
-## The why of sqlcache:
+## Motivation
 
-Over the years of coding up various scientific experiments, I often needed to call my computations or some expensive parts many times over, hence the need for persistent caching. However, the simple solutions (e.g. `shelve`, storing Pandas dataframes, CSV files, JSON lines files, ...) often had one or more problems: sensitive to changing the experimental code, did not scale for more records, not thread-safe, naive or wrong hashing of arguments, and others. So I wrote this for myself, and published it in the hope it will be useful to others.
+As a scientist and programmer, I often found myself needing to cache expensive computations across multiple runs of my experiments. While many simple caching solutions exist, they often fell short in one way or another. Some weren't thread-safe, others didn't scale well, used slow or less-portable storage (e.g. JSON files or `shelve`), and many used naive hashing methods for arguments.
 
-## Roadmap
+I created SQLMemo to address these issues and provide a robust, flexible caching solution for scientific computing, though it may hopefully be able to help you with any general caching in your Python code. It's designed to be simple to use, yet powerful enough to handle complex caching scenarios. By open-sourcing SQLMemo, I hope to provide a trustworthy and efficient tool that other researchers and developers can rely on for their own projects.
 
-* Async function support - the underlying structure is already there, needs work and testing.
-* Smart handling of parallel calls with the same arguments - the second call would idealy wait for the first one. Currently they just run in parallel.
-* Cache size managemet - add LRU eviction, manual trimming to size, etc. (Currently stores all )
+## SQLMemo may not be the right tool for you
 
-## Advanced features
+- ... if your cache many small and fast calls, and you need a very high-throughput cache
+- ... if you need to integrate it with other job-scheduling systems or workflows (though it can be made to work for a distributed computation, these systems usually have their own caching logic)
+- ... if you need to cache very large artifacts (say 10 MBs or more, though local SQLite is surprisingly good at this) or storing external files (e.g. trained ML models)
 
-### Storing extra information
+## API Reference
 
-You can store additional information about the function call and its result in the cache. This can be useful for debugging, auditing, or further processing. The following options are available:
+### `sqlmemo.SQLMemo`
 
-- `args_pickle`: Whether to store pickled function arguments in the cache. Can be set to `True`, `False`, or a callable to transform the value before storing it.
-- `args_json`: Whether to store JSON-encoded function arguments in the cache. Can be set to `True`, `False`, or a callable to transform the value before storing it.
-- `return_json`: Whether to store JSON-encoded function return value in the cache. Can be set to `True`, `False`, or a callable to transform the value before storing it.
-- `record_exceptions`: Whether to record exceptions raised by the function. Can be set to `True`, `False`, or an iterable of exception types to record.
-- `reraise_exceptions`: Whether to reraise exceptions previously raised by the function on subsequent calls with the same arguments. Can be set to `True`, `False`, or an iterable of exception types to reraise.
+Construct a new SQLMemo cache, which stores the pickled result of the function calls in a SQL database, indexed by a hash of the function arguments and the function name.
 
-Both `args_json` and `args_pickle` also accept a function that arbitrarily processes the arguments - you can select a subset, truncate them, add new ones, etc. The callable is given the arguments `(*args, **args)` (by default with the defalut values filled in). Note that stored arguments are not relevant for future execution, so you can store any convenient argument-dependent information. Similalrly for `return_json` - you can actually modify the value arbitrarily before storing it as JSON. (The pickled value needs to be exact, for obvious reasons).
+#### Parameters
 
-Example usage:
+- db (str | Path | Engine | None): The database URL, path, or SQLAlchemy Engine object. If None, an in-memory temporary DB is used. If a Path or a str without a scheme is provided, SQLite is assumed.
+- func_name (str | None): The name of the function. If None, the name will be inferred from the qualified name of the function passed to the decorator.
+- table_name (str | None): The name of the database table to store the memoized results. Defaults to "sqlmemo_data".
+- store_args_pickle (bool | Iterable[str] | Callable): Whether and how to store pickled function arguments in the cache (see below).
+- store_args_json (bool | Iterable[str] | Callable): Whether and how to store JSON-encoded function arguments in the cache (see below).
+- store_value_json (bool | Callable): Whether and how to store JSON-encoded function return value in the cache (see below).
+- store_exceptions (bool | Iterable[Type] | Callable[[Exception], bool]): Which exceptions to store from the wrapped function when called (see below).
+- reraise_exceptions (bool | Iterable[Type] | Callable[[Exception], bool]): Which exceptions to reraise from previously recorded exceptions in the cache (see below).
+- hash_factory (Callable): The hash function to use for hashing the function arguments. SHA256 by default.
+- use_dill (bool): Whether to use dill instead of pickle for serialization. Dill can serialize more types (lambdas, local classes, etc.) but is slower and complex objects serialization may be less stable across code changes and python versions.
+- apply_default_args (bool): Whether to apply default arguments to the function call before hashing and storage (True by default). True is the more defensive setting (e.g. sensitive to changing argument defaults or adding new arguments). It does allow e.g. for adding a default value to an argument where it was already called with the default.
 
+#### Storing arguments and return values
+
+While the cache always stores the pickled result of the function calls, it can also optionally store the function arguments as JSON and/or pickle, and can store the function return value as JSON. All of the three optional fields can be further customized to:
+
+- Store only a subset of arguments
+- Transform the arguments or the return value before storage, e.g. to extract only some arguments or their features to be stored in the cache in a more accessible format (JSON)
+
+The values of the parameters can be:
+- True: store the value as is.
+- False: do not store the value.
+- Callable: transform the value using the callable before storage. The callable is called with exactly the same arguments as the wrapped function for argument transformation, and with the return value (single argument) for the return value transformation.
+- Iterable[str]: store only the values of the arguments with the given names (not applicable for `store_value_json`).
+
+The JSON versions of the arguments and return values may be e.g. useful to access the SQL database with a query, e.g. `SELECT * FROM sqlmemo_data WHERE args_json->>'x' = 'value'`.
+
+Note that the stored argument values are NEVER used to match future calls, only the stored hashes.
+
+#### Storing and reraising exceptions
+
+Any exception thrown by the wrapped function can be optionally stored in the cache, and optionally reraised on a subsequent call.
+These features are controlled by `store_exceptions` and `reraise_exceptions` parameters, and act independently: storing an exception does not mean it will be reraised, and vice versa. When a stored exception is found without `reraise_exceptions`, the computation is repeated and the new value (or exception, with `store_exceptions` enabled) is stored, overwriting the old record.
+
+The values of the parameters can be:
+- True: store/reraise all exceptions.
+- False: do not store/reraise any exceptions.
+- Iterable[Type]: store/reraise exceptions that are subclasses of any of the given types. Example: `store_exceptions=(ValueError, TypeError)`.
+- Callable[[Exception], bool]: store/reraise exceptions for which the callable returns True. Example: `store_exceptions=lambda e: isinstance(e, ValueError)`.
+
+Note that exceptions raised in the called wrapped function are propagated either way, regardless of `store_exceptions` or `reraise_exceptions`.
+
+#### Database
+
+If not database URL is provided to the constructor, it can be set later using `SQLMemo.set_engine(...)`. This is useful to e.g. configure the database engine based on dynamic configuration.
+
+The connection to the database and any database structures are created lazily on the first call to the wrapper. If you want to trigger the creation of the database structures (e.g. tables) before the first call, you can use `SQLMemo.get_db_stats()`.
+
+#### Other
+
+The instance is fully thread-safe after construction, all user-facing functions use a mutex internally to ensure thread-safety. The wrapper can be called from multiple threads at once, and the called function may call itself recursively.
+
+The instance provides two sets of statistics:
+- `stats`: statistics of this instance of SQLMemo, including the number of hits, misses, and errors.
+- `get_db_stats()`: statistics of the records in the database associated with this function.
+
+You can access the SQLMemo instance as the `_sqlmemo` attribute of the wrapped function. Example:
 ```python
-@CachedFunction(
-  db="sqlite:///cache.sqlite",
-  args_json=lambda x, y: dict(x=x, sx=str(x), foo="bar"), # Process the arguments into any JSON-like object to be stored. By default, an arg dict is stored.
-  return_json=True,
-  record_exceptions=True,
-  reraise_exceptions=True # If a previous call returned an exception, just re-raise it without calling the function again
-)
-def my_function(x, y):
-  if x < 0:
-    raise ValueError("x must be non-negative")
-  return x + y
+@SQLMemo()
+def my_func(...):
+    ...
+my_func._sqlmemo.stats  # InstanceStats(hits=0, misses=0, errors=0)
 ```
 
-In this example, the function arguments and return value are stored as JSON, and any exceptions raised by the function are recorded and reraised on subsequent calls with the same arguments.
+### `sqlmemo.SQLMemo` methods and properties
 
-### SQLAlchemy ORM access to the cache
+- `get_record(*args, **kwargs) -> SQLMemoRecord | None`:
+  - Returns the database record for the given arguments, if it exists. Read-only access to the database, incl checking for existing records.
 
-You can get a SQLAlchemy ORM record CachedFunctionEntry by calling `your_cache.get_record(*args, **kwargs)` with the arguments of the function call.
-For modifying the entries, you should obtain a lock and a DB session from the cache with the code below. This is a probably qute unstable API, though.
+- `stats` property:
+  - Returns the `InstanceStats` for this instance.
 
-```python
-with your_cache._get_locked_session() as s:
-  e = your_cache.get_record("foo", answer=42)
-  e.timestamp = 0.0 # Mischief!
-  s.add(e)
-  s.commit()
-```
+- `get_db_stats() -> DBStats`:
+  - Returns statistics for stored records for this function.
+  - Requires a database query.
 
-Or you can directly work with the SQL database. The schema is the following, usually with one table per fuction (but tables can be shared).
+- `trim(keep_records: int = 0) -> None`:
+  - Trims the DB to keep only the specified number of newest records for this function.
+  - By default, deletes all records for this function.
 
-```sql
-CREATE TABLE cached_func1(
-        id INTEGER NOT NULL,
-        timestamp FLOAT NOT NULL,
-        func_name VARCHAR NOT NULL,
-        args_hash VARCHAR NOT NULL,
-        state VARCHAR(7) NOT NULL,
-        user VARCHAR,
-        hostname VARCHAR,
-        runtime_seconds FLOAT,
-        args_pickle BLOB,
-        args_json JSON,
-        return_pickle BLOB,
-        return_json JSON,
-        exception_pickle BLOB,
-        exception_str TEXT,
-        PRIMARY KEY (id)
-)
-CREATE UNIQUE INDEX ix_cached_func1_func_name_args_hash ON cached_func1 (func_name, args_hash)
-CREATE INDEX ix_cached_func1_func_name_state_timestamp ON cached_func1 (func_name, state, timestamp)
-```
+- `__repr__() -> str`:
+  - Returns a string representation of the SQLMemo instance.
 
-### The details: what counts as the same invocation?
+## Performance Considerations
 
-The cache is indexed by:
+- Use SQLite for small to medium-sized caches - it is surprisingly fast even with larger binary blobs (tens of MBs or more)
+- Consider using a full-fledged database for larger datasets or concurrent access
+- Be mindful of serialization overhead for large objects
+- Compression can help with performance and database size
+  - For SQLite, consider using [sqlite-zstd](https://github.com/phiresky/sqlite-zstd) (per-row compression of selected columns with shared compression dictionaries) or [sqlite_zstd_vfs](https://github.com/mlin/sqlite_zstd_vfs) (VFS-level compression)
 
-- The DB table name derived from qualified function name (`func.__qualname__`) or given as `table_name`. If you want more functions to share a table, just set the same tablename.
-- The qualified function name (`func.__qualname__`) or given as `func_name`. If you rename or move a function and want to keep using the cache, set `func_name` and `table_name` explicitly.
-- SHA256 hash of all the arguments. This means the following:
-  - We recursively walk the argument structure, not all types are supported. Dictionary and set keys are sorted (i.e. ordered dictionary ordering is ignored). `__hash__` is ignored because it is not stable between runs.
-  - The default argument values are applied (so for `def f(x=42)`, `f()` and `f(42)` are identical).
-  - It does not matter if *declared* arguments are given by name or position (e.g. `f(42)` and `f(x=42)` are the same)
-  - If your function has `*args` and/or `**kwargs` parameters, these are stored just as `args` resp `kwargs` parameters (or named however you named them).
-  - The names of the parameters matter - if you rename a parameter, the calls will have different hashes.
-  - If you need to know more details, the actual code is equivalent to: `b = inspect.signature(func).bind(*args, **kwargs); b.apply_defaults(); return b.arguments`
+## Roadmap and potential extensions
+
+- Support method calls (currently needs `self` argument to be hashable)
+- Handle concurrent calls with the same arguments (currently all concurrent calls with the same arguments happen; waiting and timeout logic needed)
+- Consider adding automatic trimming of old records to reduce database size (possibly with more retention policies)
+- Compression of stored values (not very efficient for small data, full-DB compression should be better when available)
+- Support wrapping async functions (doable, unclear if needed)
+
+## Contributing
+
+Contributions to SQLMemo are welcome! Please submit issues and pull requests on the project's [GitHub repository](https://github.com/gavento/sqlmemo).
 
 ## Authors
 
-Tomáš Gavenčiak, gavento.cz
+- Tomáš Gavenčiak ([@gavento](https://github.com/gavento), [ACS Research](https://acsresearch.org/))
 
-## Licence
+SQLMemo is released under the MIT License. See the LICENSE file for details.
 
-MIT
+## Changelog
+
+- 0.3.0: Refactoring into a public version. Minor API changes, renamed to sqlmemo (from sqlcache), improved testing, tooling, and documentation, `apply_default_args=True` by default.
+- 0.2.0: (internal) Refactoring and renaming. DB format change, changed argument storage logic, improved testing, stats, strip async stubs.
+- 0.1.0: (internal) Initial release. Exception storage and reraising, JSON arguments and return values, support concurrent and recursive calls.

@@ -1,9 +1,10 @@
 [tool.poetry]
 name = "sqlmemo"
-version = "0.2.1"
-description = ""
+version = "0.3.0"
+description = "Memoizing SQL-backed Computation Cache"
 authors = ["Tomas Gavenciak <gavento@gmail.com>"]
 readme = "README.md"
+license = "MIT"
 
 [build-system]
 requires = ["poetry-core"]
