@@ -391,7 +391,7 @@ class TestCachedFunction:
             f("err")
 
     @pytest.mark.skipif(
-        sys.version_info > (3, 10), reason="Dill test data is not compatible between Python major versions (yet)"
+        sys.version_info >= (3, 11), reason="Dill test data is not compatible between Python major versions (yet)"
     )
     def test_read_db_file_dill(self, tmp_path):
         db_src = self.DATA_PATH / "test_data_dill.sqlite"
