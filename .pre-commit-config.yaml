@@ -1,19 +1,23 @@
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.4.0
+    rev: v5.0.0
     hooks:
       - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: check-illegal-windows-names
+      - id: check-added-large-files
       - id: end-of-file-fixer
       - id: trailing-whitespace
 
   - repo: https://github.com/psf/black
-    rev: 23.3.0
+    rev: 24.10.0
     hooks:
       - id: black
         language_version: python3
 
   - repo: https://github.com/pycqa/isort
-    rev: 5.12.0
+    rev: 5.13.2
     hooks:
       - id: isort
         args: ["--profile", "black"]
@@ -21,4 +25,4 @@ repos:
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.21.1
     hooks:
-      - id: gitleaks
+      - id: gitleaks-docker

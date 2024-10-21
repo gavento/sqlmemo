@@ -1,9 +1,22 @@
 {
-  "image": "mcr.microsoft.com/devcontainers/python:3.12",
+  "image": "mcr.microsoft.com/devcontainers/python:3.10",
   "features": {
     "ghcr.io/devcontainers/features/python:1": {
       "toolsToInstall": "poetry"
+    },
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.isort",
+        "ms-python.black-formatter",
+        "ms-python.vscode-pylance",
+        "ms-python.python",
+        "ms-python.debugpy",
+        "ms-toolsai.jupyter"
+      ]
     }
   },
-  "postStartCommand": "poetry install && pre-commit install"
+  "postStartCommand": "poetry install --all-extras && poetry run pre-commit install --install-hooks"
 }
