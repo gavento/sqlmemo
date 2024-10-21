@@ -17,7 +17,7 @@ SQLMemo is a powerful and flexible persistent memoization cache for Python, prim
 
 ## Quick Start
 
-Install SQLMemo using pip:
+Install [SQLMemo from PyPi](https://pypi.org/project/sqlmemo/) using pip:
 
 ```bash
 pip install sqlmemo
@@ -83,17 +83,17 @@ Construct a new SQLMemo cache, which stores the pickled result of the function c
 
 #### Parameters
 
-- db (str | Path | Engine | None): The database URL, path, or SQLAlchemy Engine object. If None, an in-memory temporary DB is used. If a Path or a str without a scheme is provided, SQLite is assumed.
-- func_name (str | None): The name of the function. If None, the name will be inferred from the qualified name of the function passed to the decorator.
-- table_name (str | None): The name of the database table to store the memoized results. Defaults to "sqlmemo_data".
-- store_args_pickle (bool | Iterable[str] | Callable): Whether and how to store pickled function arguments in the cache (see below).
-- store_args_json (bool | Iterable[str] | Callable): Whether and how to store JSON-encoded function arguments in the cache (see below).
-- store_value_json (bool | Callable): Whether and how to store JSON-encoded function return value in the cache (see below).
-- store_exceptions (bool | Iterable[Type] | Callable[[Exception], bool]): Which exceptions to store from the wrapped function when called (see below).
-- reraise_exceptions (bool | Iterable[Type] | Callable[[Exception], bool]): Which exceptions to reraise from previously recorded exceptions in the cache (see below).
-- hash_factory (Callable): The hash function to use for hashing the function arguments. SHA256 by default.
-- use_dill (bool): Whether to use dill instead of pickle for serialization. Dill can serialize more types (lambdas, local classes, etc.) but is slower and complex objects serialization may be less stable across code changes and python versions.
-- apply_default_args (bool): Whether to apply default arguments to the function call before hashing and storage (True by default). True is the more defensive setting (e.g. sensitive to changing argument defaults or adding new arguments). It does allow e.g. for adding a default value to an argument where it was already called with the default.
+- `db` (`str` | `Path` | `Engine` | `None`): The database URL, path, or SQLAlchemy Engine object. If `None`, an in-memory temporary DB is used. If a `Path` or a `str` without a scheme is provided, SQLite is assumed.
+- `func_name` (`str` | `None`): The name of the function. If `None`, the name will be inferred from the qualified name of the function passed to the decorator.
+- `table_name` (`str` | `None`): The name of the database table to store the memoized results. Defaults to `"sqlmemo_data"`.
+- `store_args_pickle` (`bool` | `Iterable[str]` | `Callable`): Whether and how to store pickled function arguments in the cache (see below).
+- `store_args_json` (`bool` | `Iterable[str]` | `Callable`): Whether and how to store JSON-encoded function arguments in the cache (see below).
+- `store_value_json` (`bool` | `Callable`): Whether and how to store JSON-encoded function return value in the cache (see below).
+- `store_exceptions` (`bool` | `Iterable[Type]` | `Callable[[Exception], bool]`): Which exceptions to store from the wrapped function when called (see below).
+- `reraise_exceptions` (`bool` | `Iterable[Type]` | `Callable[[Exception], bool]`): Which exceptions to reraise from previously recorded exceptions in the cache (see below).
+- `hash_factory` (`Callable`): The hash function to use for hashing the function arguments. SHA256 by default.
+- `use_dill` (`bool`): Whether to use dill instead of pickle for serialization. Dill can serialize more types (lambdas, local classes, etc.) but is slower and complex objects serialization may be less stable across code changes and python versions.
+- `apply_default_args` (`bool`): Whether to apply default arguments to the function call before hashing and storage (`True` by default).
 
 #### Storing arguments and return values
 
@@ -102,11 +102,11 @@ While the cache always stores the pickled result of the function calls, it can a
 - Store only a subset of arguments
 - Transform the arguments or the return value before storage, e.g. to extract only some arguments or their features to be stored in the cache in a more accessible format (JSON)
 
-The values of the parameters can be:
-- True: store the value as is.
-- False: do not store the value.
-- Callable: transform the value using the callable before storage. The callable is called with exactly the same arguments as the wrapped function for argument transformation, and with the return value (single argument) for the return value transformation.
-- Iterable[str]: store only the values of the arguments with the given names (not applicable for `store_value_json`).
+The values of each of the parameters can be:
+- `True`: store the value as is.
+- `False`: do not store the value.
+- `Callable`: transform the value using the callable before storage. The callable is called with exactly the same arguments as the wrapped function for argument transformation, and with the return value (single argument) for the return value transformation.
+- `Iterable[str]`: store only the values of the arguments with the given names (not applicable for `store_value_json`).
 
 The JSON versions of the arguments and return values may be e.g. useful to access the SQL database with a query, e.g. `SELECT * FROM sqlmemo_data WHERE args_json->>'x' = 'value'`.
 
@@ -118,12 +118,47 @@ Any exception thrown by the wrapped function can be optionally stored in the cac
 These features are controlled by `store_exceptions` and `reraise_exceptions` parameters, and act independently: storing an exception does not mean it will be reraised, and vice versa. When a stored exception is found without `reraise_exceptions`, the computation is repeated and the new value (or exception, with `store_exceptions` enabled) is stored, overwriting the old record.
 
 The values of the parameters can be:
-- True: store/reraise all exceptions.
-- False: do not store/reraise any exceptions.
-- Iterable[Type]: store/reraise exceptions that are subclasses of any of the given types. Example: `store_exceptions=(ValueError, TypeError)`.
-- Callable[[Exception], bool]: store/reraise exceptions for which the callable returns True. Example: `store_exceptions=lambda e: isinstance(e, ValueError)`.
+- `True`: store/reraise all exceptions.
+- `False`: do not store/reraise any exceptions.
+- `Iterable[Type]`: store/reraise exceptions that are subclasses of any of the given types. Example: `store_exceptions=(ValueError, TypeError)`.
+- `Callable[[Exception], bool]`: store/reraise exceptions for which the callable returns `True`. Example: `store_exceptions=lambda e: isinstance(e, ValueError)`.
 
 Note that exceptions raised in the called wrapped function are propagated either way, regardless of `store_exceptions` or `reraise_exceptions`.
+
+#### Default arguments and argument equivalence
+
+SQLMemo uses a robust method to convert function arguments into a *dictionary format* before hashing. This is done using the internal `_args_to_dict()` method, which handles various argument types:
+
+1. Named positional and keyword arguments are added to the dictionary under their names.
+2. If present, `*args` are stored under the key `"args"` (resp the name from the function signature) as a tuple.
+3. `**kwargs` are added to the dictionary directly with their original keys.
+4. Default argument values in the function signature are applied if `apply_default_args=True` (default).
+5. The order of parameters is ignored, only the argument names matter.
+
+This approach ensures that equivalent calls with different argument orderings or explicit/implicit default values are treated the same way. The resulting dictionary is then hashed
+to create a unique identifier for the function call. At the same time, it still allows for flexibility in how the function is called. Consider the following equivalent examples:
+
+```python
+@SQLMemo()
+def func(a, b=42, *args, z=7, **kwargs): ...
+my_func(1, 2, 3, 4, x=5, y=6)  # Results in hashed args dictionary {'a': 1, 'b': 2, 'args': (3, 4), 'x': 5, 'y': 6, 'z': 7}
+
+@SQLMemo()
+def func(*args, a=1, b=2, x=5, y=6, **kwargs): ...
+my_func(3, 4, z=7)  # Results in hashed args dictionary {'a': 1, 'b': 2, 'args': (3, 4), 'x': 5, 'y': 6, 'z': 7}
+
+@SQLMemo()
+def func(x, y, z, *args, a=1, b=None): ...
+my_func(5, 6, 7, 3, 4, b=2)  # Results in hashed args dictionary {'a': 1, 'b': 2, 'x': 3, 'y': 4, 'z': 7}
+
+# For contrast, without applying default arguments:
+@SQLMemo(apply_default_args=False)
+def func(*args, a=1, b=2, x=5, y=6, **kwargs): ...
+my_func(3, 4, z=7)  # Results in hashed args dictionary {'args': (3, 4), 'z': 7}
+```
+
+Note that `apply_default_args=True` is the more defensive setting, as unlike just hashing the explicitely arguments, it is sensitive to changing argument defaults or adding new arguments. It still does allow for some changes without invalidating the cache records: e.g. changing the default value of an argument that has always been passed explicitely; pulling an always-provided `**kwargs` argument from `**kwargs` to a named (or even positional) argument; reordering named arguments, etc.
+
 
 #### Database
 
