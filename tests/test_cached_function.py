@@ -529,7 +529,124 @@ class TestCachedFunction:
         with pytest.raises(NotImplementedError):
             f3b(0)
 
-# TODO: Add tests for argument filtering (json, pickle), value filtering (json), and exception filtering (in recording and reraising)
+    def test_filtering_via_lambda(self):
+        @SQLMemo(
+            store_args_json=lambda x, y, z, **kwargs: {"x": x, "y_len": len(y), "z_type": type(z).__name__, "ks": len(kwargs)},
+            store_args_pickle=lambda x, y, z, **kwargs: {"x": x, "z": z, "w": kwargs.get("w")},
+            store_value_json=lambda result: {"sum": result["sum"], "count": result["count"]},
+        )
+        def filtered_func(x, y, z=0, **kwargs):
+            result = {
+                "sum": x + len(y) + (z if isinstance(z, int) else 0),
+                "count": len(y),
+                "halfsum": (x + len(y) + (z if isinstance(z, int) else 0)) / 2,
+            }
+            return result
+
+        result = filtered_func(1, "hello", 3)
+        assert result == {"sum": 9, "count": 5, "halfsum": 4.5}
+
+        record = filtered_func._sqlmemo.get_record(1, "hello", 3)
+        assert record is not None
+        assert record.args_json == {"x": 1, "y_len": 5, "z_type": "int", "ks": 0}
+        assert record.args_pickle is not None
+        assert pickle.loads(record.args_pickle) == {"x": 1, "z": 3, "w": None}
+        assert record.value_json == {"sum": 9, "count": 5}
+
+        # Test that filtering preserves cache hits
+        assert filtered_func(1, "hello", 3) == {"sum": 9, "count": 5, "halfsum": 4.5}
+        assert filtered_func._sqlmemo.stats.hits == 1
+
+        assert filtered_func(1, "hello", w=4, ww="a") == {"sum": 6, "count": 5, "halfsum": 3.0}
+        record = filtered_func._sqlmemo.get_record(1, "hello", w=4, ww="a")
+        assert record is not None
+        assert record.args_json == {"x": 1, "y_len": 5, "z_type": "int", "ks": 2}
+        assert record.args_pickle is not None
+        assert pickle.loads(record.args_pickle) == {"x": 1, "z": 0, "w": 4}
+        assert record.value_json == {"sum": 6, "count": 5}
+
+    def test_filtering_via_subset(self):
+        @SQLMemo(
+            store_args_json=["x", "z", "argsss", "w"],
+            store_args_pickle=["y", "z", "ww"],
+        )
+        def filtered_func(x, y, *argsss, z=0, **kwargs):
+            return (x, y, z, argsss, kwargs)
+
+        assert filtered_func(1, "hello", z=3) == (1, "hello", 3, (), {})
+
+        record = filtered_func._sqlmemo.get_record(1, "hello", z=3)
+        assert record is not None
+        assert record.args_json == {"x": 1, "z": 3, "argsss": []}
+        assert record.args_pickle is not None
+        assert pickle.loads(record.args_pickle) == {"y": "hello", "z": 3}
+
+        # Test that filtering preserves cache hits
+        assert filtered_func(1, "hello", z=3) == (1, "hello", 3, (), {})
+        assert filtered_func._sqlmemo.stats.hits == 1
+
+        assert filtered_func(1, "hello", 2, 3, w=4, ww="a") == (1, "hello", 0, (2, 3), {"w": 4, "ww": "a"})
+        record = filtered_func._sqlmemo.get_record(1, "hello", 2, 3, w=4, ww="a")
+        assert record is not None
+        assert record.args_json == {"x": 1, "z": 0, "w": 4, "argsss": [2, 3]}
+        assert record.args_pickle is not None
+        assert pickle.loads(record.args_pickle) == {"y": "hello", "z": 0, "ww": "a"}
+
+    def test_exception_filtering(self):
+        def sus(x):
+            if isinstance(x, str):
+                raise TypeError()
+            if isinstance(x, float):
+                raise NotImplementedError()
+            if x < 0:
+                raise ValueError()
+            return x * 2
+
+        @SQLMemo(
+            record_exceptions=lambda e: isinstance(e, (ValueError, TypeError)),
+            reraise_exceptions=lambda e: not isinstance(e, TypeError),
+        )
+        def lambda_filter(x):
+            return sus(x)
+
+        @SQLMemo(record_exceptions=[ValueError, TypeError], reraise_exceptions=[ValueError])
+        def list_filter(x):
+            return sus(x)
+
+        for f in [lambda_filter, list_filter]:
+            with pytest.raises(TypeError):
+                f("test")
+            with pytest.raises(TypeError):
+                f("test")
+            assert f._sqlmemo.stats.errors == 2
+            assert f._sqlmemo.stats.hits == 0
+            assert f._sqlmemo.get_db_stats().records == 1
+            assert f._sqlmemo.get_db_stats().records_error == 1
+
+            with pytest.raises(NotImplementedError):
+                f(3.14)
+            with pytest.raises(NotImplementedError):
+                f(3.14)
+            assert f._sqlmemo.stats.errors == 4
+            assert f._sqlmemo.stats.hits == 0
+            assert f._sqlmemo.get_db_stats().records == 1
+
+            with pytest.raises(ValueError):
+                f(-1)
+            assert f._sqlmemo.stats.hits == 0
+            with pytest.raises(ValueError):
+                f(-1)
+            assert f._sqlmemo.stats.hits == 1
+            assert f._sqlmemo.stats.errors == 5
+            assert f._sqlmemo.get_db_stats().records == 2
+            assert f._sqlmemo.get_db_stats().records_error == 2
+
+            assert f(1) == 2
+            assert f(1) == 2
+            assert f._sqlmemo.stats.hits == 2
+            assert f._sqlmemo.get_db_stats().records == 3
+            assert f._sqlmemo.get_db_stats().records_error == 2
+
 
 if __name__ == "__main__":
     unittest.main()

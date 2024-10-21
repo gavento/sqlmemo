@@ -43,10 +43,10 @@ class InstanceStats:
 
 @dataclass
 class DBStats:
-    records: int | None = None
-    records_done: int | None = None
-    records_running: int | None = None
-    records_error: int | None = None
+    records: int
+    records_done: int
+    records_running: int
+    records_error: int
 
 
 class SQLMemo:
@@ -263,13 +263,14 @@ class SQLMemo:
         if param is False:
             return None
         elif param is True:
-            val = dict(args.arguments)
+            _, val = self._args_to_dict(args.args, args.kwargs)
         elif isinstance(param, Iterable):
-            val = {k: args.arguments[k] for k in param}
+            _, val = self._args_to_dict(args.args, args.kwargs)
+            val = {k: val[k] for k in param if k in val}
         elif callable(param):
             val = param(*args.args, **args.kwargs)
         else:
-            raise TypeError(f"Invalid param type: {param!r}")
+            assert False, f"Invalid param type: {param!r}"
         return self._encode_value_helper(val, param=True, **kwargs)
 
     def _exception_check_helper(
