@@ -32,33 +32,35 @@ import time
 # Any URI supported by SQLAlchemy, uses SQLite by default
 # Multiple functions can be cached in the same database
 @SQLMemo("./cache.sqlite")
-def slow_function(x, y=1.0, *args):
+def slow_function(x="a", *args, y=42):
     time.sleep(1.0)
-    return (x, y, *args)
+    return (x, args, y)
 
 # First call: takes about 1 second
 result1 = slow_function("a", "b", "c")
-print(result1)  # ('a', 'b', 'c')
+print(result1)  # ('a', ('b', 'c'), 42)
 
 # Second call: returns immediately from cache
 result2 = slow_function("a", "b", "c")
-print(result2)  # ('a', 'b', 'c')
+print(result2)  # ('a', ('b', 'c'), 42)
 
-# Access the SQLMemo instance itself
+# Third call: also works for equivalent arguments
+result3 = slow_function("a", "b", "c", y=42)
+print(result3)  # ('a', ('b', 'c'), 42)
+
+# Access the SQLMemo instance itself and check cache statistics
 cache = slow_function._sqlmemo
+print(cache.stats)  # InstanceStats(hits=2, misses=1, errors=0)
 
-# Check cache statistics
-print(cache.stats)  # InstanceStats(hits=1, misses=1, errors=0)
-
-# Get database statistics
+# Get database statistics: 1 record in the DB
 print(cache.get_db_stats())  # DBStats(records=1, records_done=1, records_running=0, records_error=0)
 
 # Trim the database to keep only the most recent 10 records for this function
 cache.trim(keep_records=10)
 
-# Get the database entry for the call above
-record = cache.get_record(x="a", y="b", args=("c",))
-print(record)  # SQLMemoRecord(id=1, func_name='slow_function', args_hash='...', ...
+# Advanced access: Get the database entry for the call above
+record = cache.get_record("a", "b", "c")
+print(record)  # SQLMemoRecord(id=1, func_name='slow_function', args_hash='...', timestamp=..., ...
 ```
 
 ## Motivation

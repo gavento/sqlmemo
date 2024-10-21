@@ -29,6 +29,11 @@ class SQLMemoRecord:
     exception_pickle: Mapped[Optional[bytes]]
     exception_str: Mapped[Optional[Any]] = mapped_column(Text, nullable=True)
 
+    def __repr__(self) -> str:
+        attrs = {k: repr(v) for k, v in self.__dict__.items() if not k.startswith("_")}
+        attrs = {k: v if len(v) < 25 else v[:17] + "<...>" for k, v in attrs.items()}
+        return f"{self.__class__.__name__}({', '.join(f'{k}={v}' for k, v in attrs.items())})"
+
 
 def concrete_memoize_record(table_name) -> Type[SQLMemoRecord]:
     ## NB: We want to have separate metadata for each table, so we can't use the default DeclarativeBase
