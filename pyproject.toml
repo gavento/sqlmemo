@@ -5,6 +5,9 @@ description = "Memoizing SQL-backed Computation Cache"
 authors = ["Tomas Gavenciak <gavento@gmail.com>"]
 readme = "README.md"
 license = "MIT"
+homepage = "https://github.com/gavento/sqlmemo"
+repository = "https://github.com/gavento/sqlmemo"
+keywords = ["memoization", "cache", "sql"]
 
 [build-system]
 requires = ["poetry-core"]

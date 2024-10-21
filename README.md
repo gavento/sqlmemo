@@ -1,6 +1,6 @@
 # SQLMemo: Memoizing SQL-backed Computation Cache
 
-![PyPI - Version](https://img.shields.io/pypi/v/sqlmemo) ![GitHub branch status](https://img.shields.io/github/checks-status/gavento/sqlmemo/main) [![codecov](https://codecov.io/gh/gavento/sqlmemo/graph/badge.svg?token=AtpsvIAOnt)](https://codecov.io/gh/gavento/sqlmemo)
+[![PyPI - Version](https://img.shields.io/pypi/v/sqlmemo)](https://pypi.org/project/sqlmemo/) [![GitHub branch status](https://img.shields.io/github/checks-status/gavento/sqlmemo/main)](https://github.com/gavento/sqlmemo/actions/workflows/ci.yml) [![codecov](https://codecov.io/gh/gavento/sqlmemo/graph/badge.svg?token=AtpsvIAOnt)](https://codecov.io/gh/gavento/sqlmemo)
 
 SQLMemo is a powerful and flexible persistent memoization cache for Python, primarily intended for small- to medium-scale scientific computing, and backed by an SQL database. It provides a simple yet robust way to cache function results, improving performance for expensive computations and enabling efficient data reuse across multiple runs.
 
