@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "sqlmemo"
-version = "0.3.0"
+version = "0.3.1"
 description = "Memoizing SQL-backed Computation Cache"
 authors = ["Tomas Gavenciak <gavento@gmail.com>"]
 readme = "README.md"

@@ -192,6 +192,7 @@ SQLMemo is released under the MIT License. See the LICENSE file for details.
 
 ## Changelog
 
+- 0.3.1: Fixed superfluous pytest import, CI and metadata improvements.
 - 0.3.0: Refactoring into a public version. Minor API changes, renamed to sqlmemo (from sqlcache), improved testing, tooling, and documentation, `apply_default_args=True` by default.
 - 0.2.0: (internal) Refactoring and renaming. DB format change, changed argument storage logic, improved testing, stats, strip async stubs.
 - 0.1.0: (internal) Initial release. Exception storage and reraising, JSON arguments and return values, support concurrent and recursive calls.
