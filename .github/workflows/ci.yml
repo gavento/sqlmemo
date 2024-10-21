@@ -98,3 +98,13 @@ jobs:
         poetry config pypi-token.pypi "$PYPI_TOKEN"
         poetry build
         poetry publish
+
+    - name: Create GitHub Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        artifacts: ./dist/*
+        draft: false
+        prerelease: false
