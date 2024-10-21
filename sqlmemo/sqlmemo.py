@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any, Callable, Generator, Iterable, Optional, ParamSpec, Protocol, Type, TypeVar, cast
 
 import sqlalchemy as sa
-from pytest import Session
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
