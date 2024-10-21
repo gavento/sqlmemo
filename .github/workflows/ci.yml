@@ -48,6 +48,12 @@ jobs:
     - name: Install project
       run: poetry install --no-interaction --all-extras
 
+    - name: Load cached pre-commit environment
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pre-commit
+        key: pre-commit-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('.pre-commit-config.yaml') }}
+
     - name: Run pre-commit
       run: |
         poetry run pre-commit run --all-files
