@@ -76,12 +76,14 @@ def create_test_data_dill(path: Path):
     with pytest.raises(ValueError):
         f("err")
     g = XY
+    f("XY")  # Store the class so we can use it on the next line
+    f(XY(1, 2))
     f(XY(1, 2))
 
-    assert f._sqlmemo.stats.hits == 1
-    assert f._sqlmemo.stats.misses == 6
+    assert f._sqlmemo.stats.hits == 2
+    assert f._sqlmemo.stats.misses == 7
     assert f._sqlmemo.stats.errors == 1
-    assert f._sqlmemo.get_db_stats().records == 6
+    assert f._sqlmemo.get_db_stats().records == 7
 
 
 def create_test_data_json(path: Path):
